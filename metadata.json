@@ -1,0 +1,6 @@
+{
+  "name": "OmniPDF",
+  "description": "Advance all-in-one minimal PDF converter with image-to-PDF, merge, render, text-to-PDF, and custom export tools.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

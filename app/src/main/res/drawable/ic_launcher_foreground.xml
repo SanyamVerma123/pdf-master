@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Centered within 66dp safe zone (canvas 108dp: x:24..84, y:22..86) -->
+    <!-- Document shadow/outer outline -->
+    <path
+        android:fillColor="#22000000"
+        android:pathData="M34,26 L64,26 L76,38 L76,84 L34,84 Z" />
+    <!-- Document Body -->
+    <path
+        android:fillColor="#F8FAFC"
+        android:pathData="M32,24 L62,24 L74,36 L74,82 L32,82 Z" />
+    <!-- Folded Corner -->
+    <path
+        android:fillColor="#CBD5E1"
+        android:pathData="M62,24 L74,36 L62,36 Z" />
+    <!-- Red Crimson PDF Badge Banner -->
+    <path
+        android:fillColor="#E11D48"
+        android:pathData="M27,50 L53,50 L50,66 L27,66 Z" />
+    <!-- Badge text / mark "PDF" stylization -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M31,54 L38,54 C39.5,54 40.5,55 40.5,56.5 C40.5,58 39.5,59 38,59 L33.5,59 L33.5,62 L31,62 Z M33.5,56 L33.5,57.5 L37.5,57.5 C38,57.5 38.3,57.2 38.3,56.75 C38.3,56.3 38,56 37.5,56 Z" />
+    <!-- Subtle document horizontal text lines -->
+    <path
+        android:fillColor="#94A3B8"
+        android:pathData="M40,36 L56,36 L56,38 L40,38 Z" />
+    <path
+        android:fillColor="#CBD5E1"
+        android:pathData="M34,71 L66,71 L66,73 L34,73 Z" />
+    <path
+        android:fillColor="#E2E8F0"
+        android:pathData="M34,76 L54,76 L54,78 L34,78 Z" />
+</vector>
