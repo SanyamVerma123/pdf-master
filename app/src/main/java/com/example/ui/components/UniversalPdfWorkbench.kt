@@ -138,6 +138,7 @@ fun UniversalPdfWorkbench(
     val pageAnnotations = remember {
         mutableStateMapOf<Int, List<androidx.compose.ui.geometry.Offset>>()
     }
+    var fullScreenPageIndex by remember { mutableStateOf<Int?>(null) }
 
     // Common Text inputs
     var customTextInput by remember { mutableStateOf("") }
@@ -550,8 +551,9 @@ fun UniversalPdfWorkbench(
                                     )
                                     // Un-committed annotations drawn live so the
                                     // user sees what a tap will save.
-                                    val pending = pageAnnotations[idx]
-                                    if (pending != null && pending.isNotEmpty()) {
+                                    val pending: List<androidx.compose.ui.geometry.Offset>? =
+                                        pageAnnotations[idx]
+                                    if (!pending.isNullOrEmpty()) {
                                         Canvas(modifier = Modifier.fillMaxSize()) {
                                             for (i in 0 until pending.size - 1) {
                                                 val p1 = pending[i]

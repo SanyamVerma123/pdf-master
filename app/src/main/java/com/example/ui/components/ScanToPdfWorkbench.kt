@@ -112,10 +112,11 @@ fun ScanToPdfWorkbench(
                             .data(page.processedUri)
                             .size(Size.ORIGINAL)
                             .build()
-                            .let { loader.execute(it).drawable?.toBitmap() }
+                            .let { loader.execute(it).drawable?.let { d -> (d as android.graphics.drawable.BitmapDrawable).bitmap } }
                     }.getOrNull()
                 }
-                scanPageBitmaps = decoded
+                @Suppress("UNCHECKED_CAST")
+                scanPageBitmaps = decoded.filterNotNull() as List<android.graphics.Bitmap>
                 isLoadingScanBitmaps = false
             }
         }
@@ -428,7 +429,7 @@ private fun ScanPageThumbnailStrip(
     onEditPage: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val gridState = rememberLazyGridState()
+    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
 
     Column(modifier = modifier) {
         Row(

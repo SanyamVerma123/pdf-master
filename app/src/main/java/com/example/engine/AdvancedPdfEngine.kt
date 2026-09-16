@@ -1328,8 +1328,7 @@ object AdvancedPdfEngine {
                 }
                 doc.finishPage(page)
             }
-            val os: java.io.OutputStream = FileOutputStream(out)
-            os.use { doc.writeTo(it) }
+            FileOutputStream(out).use { doc.writeTo(it) }
         } finally {
             doc.close()
         }
