@@ -24,6 +24,7 @@ jobs:
       - name: Build debug APK
         id: build
         run: |
+          set -o pipefail
           {
             echo "=== environment ==="
             java -version 2>&1 | head -2
@@ -40,6 +41,11 @@ jobs:
             echo "=== dist ==="
             ls -la dist/ 2>&1
           } 2>&1 | tee build.log
+          # fail the step if no APK was produced
+          if [ ! -s dist/app-debug.apk ]; then
+            echo "FATAL: no APK produced - see build.log"
+            exit 1
+          fi
 
       - name: Upload APK artifact
         if: always()
