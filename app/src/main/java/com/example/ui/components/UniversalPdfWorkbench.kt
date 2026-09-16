@@ -137,7 +137,7 @@ fun UniversalPdfWorkbench(
     // Per-page annotation strokes collected from PageEditSheet, keyed by page.
     // Normalized (0f..1f) so they survive the page's Fit letterboxing and zoom.
     val pageAnnotations = remember {
-        mutableStateMapOf<Int, List<androidx.compose.ui.geometry.Offset>>()
+        androidx.compose.runtime.mutableStateMapOf<Int, List<androidx.compose.ui.geometry.Offset>>()
     }
     var fullScreenPageIndex by remember { mutableStateOf<Int?>(null) }
 
@@ -1188,9 +1188,10 @@ fun UniversalPdfWorkbench(
                     // Removing a staged page invalidates the indices used by the
                     // annotation map, so shift every entry above it down.
                     pageBitmaps = pageBitmaps.toMutableList().also { it.removeAt(index) }
-                    val shifted = pageAnnotations.toMap()
+                    val shifted: Map<Int, List<androidx.compose.ui.geometry.Offset>> =
+                        pageAnnotations.toMap()
                     pageAnnotations.clear()
-                    shifted.forEach { (key, strokes) ->
+                    for ((key, strokes) in shifted) {
                         when {
                             key == index -> Unit
                             key > index -> pageAnnotations[key - 1] = strokes

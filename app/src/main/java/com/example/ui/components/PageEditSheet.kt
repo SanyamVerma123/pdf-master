@@ -107,6 +107,7 @@ fun PageEditSheet(
     // Raw strokes in the canvas' pixel space; converted to normalized points
     // (relative to the page bitmap) when the user hits the apply button.
     val strokes = remember { mutableStateListOf<PointF>() }
+    var applyStrokes by remember { mutableStateOf({}) }
     val density = LocalDensity.current
     val listState = rememberLazyListState()
 
@@ -204,6 +205,28 @@ fun PageEditSheet(
                     val offsetX = (canvasWpx - page.width * fitScale) / 2f
                     val offsetY = (canvasHpx - page.height * fitScale) / 2f
 
+                    // The APPLY button lives outside BoxWithConstraints, so hand
+                    // it a ready-made normalizer instead of the raw values.
+                    applyStrokes = {
+                        val target = currentPage
+                        val normalized = strokesToNormalized(
+                            strokes = strokes.toList(),
+                            canvasWpx = canvasWpx,
+                            canvasHpx = canvasHpx,
+                            imageW = page.width,
+                            imageH = page.height,
+                            fitScale = fitScale,
+                            offsetX = offsetX,
+                            offsetY = offsetY,
+                            zoom = zoom,
+                            panX = panX,
+                            panY = panY
+                        )
+                        strokes.clear()
+                        drawMode = false
+                        if (normalized.isNotEmpty()) onAnnotatePage(target, normalized)
+                    }
+
                     // Both the page image and the stroke overlay receive the
                     // same transform so strokes stay glued to the page while
                     // zooming and panning.
@@ -267,7 +290,7 @@ fun PageEditSheet(
                                         }
                                     )
                                 } else {
-                                    detectTransformGestures { _, pan, zoomChange, _, _ ->
+                                    detectTransformGestures { _, pan, zoomChange, _ ->
                                         zoom = (zoom * zoomChange).coerceIn(1f, 6f)
                                         panX += pan.x
                                         panY += pan.y
@@ -292,27 +315,7 @@ fun PageEditSheet(
                             Text("CLEAR", style = monoLabel)
                         }
                         Button(
-                            onClick = {
-                                val target = currentPage
-                                val normalized = strokesToNormalized(
-                                    strokes = strokes.toList(),
-                                    canvasWpx = canvasWpx,
-                                    canvasHpx = canvasHpx,
-                                    imageW = page.width,
-                                    imageH = page.height,
-                                    fitScale = fitScale,
-                                    offsetX = offsetX,
-                                    offsetY = offsetY,
-                                    zoom = zoom,
-                                    panX = panX,
-                                    panY = panY
-                                )
-                                strokes.clear()
-                                drawMode = false
-                                if (normalized.isNotEmpty()) {
-                                    onAnnotatePage(target, normalized)
-                                }
-                            },
+                            onClick = { applyStrokes() },
                             modifier = Modifier.weight(1f).height(44.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = EmeraldSuccess
