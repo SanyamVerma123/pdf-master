@@ -158,7 +158,7 @@ fun UniversalPdfWorkbench(
     // Crop specific
     var cropUniform by remember { mutableStateOf(true) }
     var cropMarginPercent by remember { mutableFloatStateOf(0.05f) }
-    var redactPages by remember { mutableStateOf("1") }
+    var redactPages by remember { mutableStateOf("") }
     var redactText by remember { mutableStateOf("") }
 
     // Protect / Unlock

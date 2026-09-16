@@ -1260,7 +1260,11 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                         _conversionState.value = ConversionUiState.Processing(3, 10, "Cropping margins...")
                         outputFile = com.example.engine.AdvancedPdfEngine.cropPdf(
                             context = app,
-                            pdfUri = pdfUri
+                            pdfUri = pdfUri,
+                            cropLeftPercent = cropMargin,
+                            cropTopPercent = cropMargin,
+                            cropRightPercent = cropMargin,
+                            cropBottomPercent = cropMargin
                         ) { cur, tot ->
                             _conversionState.value = ConversionUiState.Processing(cur, tot, "Cropping page $cur of $tot")
                         }

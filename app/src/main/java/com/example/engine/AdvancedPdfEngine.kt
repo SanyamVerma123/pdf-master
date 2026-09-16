@@ -25,6 +25,7 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
@@ -750,7 +751,11 @@ object AdvancedPdfEngine {
         // Width in CSS px for a 595pt page at ~96dpi (595 * 96 / 72).
         val contentW = 793
         val height = withContext(Dispatchers.Main) {
-            renderWebToHeight(context, isUrl, pageHtml, contentW, onProgress)
+            runCatching {
+                withTimeout(20_000) {
+                    renderWebToHeight(context, isUrl, pageHtml, contentW, onProgress)
+                }
+            }.getOrDefault(0)
         }
         if (height <= 0) throw IllegalStateException("Could not render the page. Check the link or your internet connection.")
 
@@ -759,7 +764,11 @@ object AdvancedPdfEngine {
         for (seg in 0 until pages) {
             onProgress(seg + 1, pages)
             val bmp = withContext(Dispatchers.Main) {
-                renderWebToBitmap(context, isUrl, pageHtml, contentW, 1122, seg * 1122)
+                runCatching {
+                    withTimeout(20_000) {
+                        renderWebToBitmap(context, isUrl, pageHtml, contentW, 1122, seg * 1122)
+                    }
+                }.getOrNull()
             } ?: continue
             val pageInfo = PdfDocument.PageInfo.Builder(595, 842, seg + 1).create()
             val page = doc.startPage(pageInfo)
@@ -772,9 +781,11 @@ object AdvancedPdfEngine {
             doc.finishPage(page)
             bmp.recycle()
         }
-        doc.close()
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        File(context.filesDir, "html_export_$timestamp.pdf")
+        val outFile = File(context.filesDir, "html_export_$timestamp.pdf")
+        FileOutputStream(outFile).use { doc.writeTo(it) }
+        doc.close()
+        outFile
     }
 
     /**
@@ -788,15 +799,19 @@ object AdvancedPdfEngine {
         onProgress: (Int, Int) -> Unit
     ): Int = suspendCancellableCoroutine { cont ->
         val webView = WebView(context)
+        var finished = false
         webView.layout(0, 0, width, 1)
         webView.settings.javaScriptEnabled = true
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
+                if (finished) return
+                finished = true
                 view?.measure(
                     View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
                     View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
                 )
                 view?.layout(0, 0, view.measuredWidth, view.measuredHeight)
+                webView.destroy()
                 if (cont.isActive) cont.resume(view?.measuredHeight ?: 0)
             }
         }
@@ -818,10 +833,13 @@ object AdvancedPdfEngine {
         topOffset: Int
     ): Bitmap? = suspendCancellableCoroutine { cont ->
         val webView = WebView(context)
+        var finished = false
         webView.layout(0, 0, width, height)
         webView.settings.javaScriptEnabled = true
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
+                if (finished) return
+                finished = true
                 view?.measure(
                     View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
                     View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
@@ -836,6 +854,7 @@ object AdvancedPdfEngine {
                         view.draw(c)
                     }
                 } else null
+                webView.destroy()
                 if (cont.isActive) cont.resume(bmp)
             }
         }
