@@ -8,11 +8,11 @@ lifecycleRuntimeKtx = "2.9.4"
 lifecycleViewmodelCompose = "2.9.4"
 lifecycleRuntimeCompose = "2.9.4"
 activityCompose = "1.13.0"
-kotlin = "2.2.20"
+kotlin = "2.2.10"
 composeBom = "2026.09.00"
-# AGP 9.4.0's own POM pins symbol-processing-gradle-plugin to 2.2.10-2.0.2;
-# kotlin = 2.2.20 here, and 2.2.20-2.0.4 is the matching KSP release.
-googleDevtoolsKsp = "2.2.20-2.0.4"
+# AGP 9 bundles Kotlin 2.2.10 as its built-in compiler. KSP must be 2.3.1+ to
+# work with AGP 9's built-in Kotlin (2.3.x is no longer Kotlin-version tied).
+googleDevtoolsKsp = "2.3.12"
 navigationCompose = "2.10.1"
 roomRuntime = "2.8.5"
 roomKtx = "2.8.5"
@@ -67,7 +67,6 @@ mlkit-text-recognition = { group = "com.google.android.gms", name = "play-servic
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 google-devtools-ksp = { id = "com.google.devtools.ksp", version.ref = "googleDevtoolsKsp" }
 roborazzi = { id = "io.github.takahirom.roborazzi", version.ref = "roborazzi" }
