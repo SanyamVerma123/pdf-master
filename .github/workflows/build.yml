@@ -55,7 +55,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: omnipdf-${{ github.run_number }}
-          name: OmniPDF build ${{ github.run_number }}
+          name: OmniPDF v${{ github.run_number }}
           body: Automatic debug build of ${{ github.sha }}
           files: dist/app-debug.apk
           fail_on_unmatched_files: false

@@ -45,8 +45,7 @@ enum class ToolCategory(val title: String, val iconLabel: String) {
     OPTIMIZE("Optimize", "⚡"),
     CONVERT("Convert", "🔄"),
     EDIT("Edit", "✏️"),
-    SECURITY("Security", "🔒"),
-    AI_INTELLIGENCE("AI Intelligence", "✨")
+    SECURITY("Security", "🔒")
 }
 
 data class ToolItem(
@@ -151,72 +150,6 @@ object ToolCatalog {
         // ==========================================
         // Group 3: Convert - PDF to and from other formats
         // ==========================================
-        ToolItem(
-            type = ConversionType.PDF_TO_WORD,
-            title = "PDF to Word",
-            subtitle = "DOC & DOCX EXPORT",
-            description = "Easily convert your PDF files into easy to edit DOC and DOCX documents with preserved paragraphs.",
-            category = ToolCategory.CONVERT,
-            badge = "OFFICE",
-            accentColor = Color(0xFF2563EB),
-            icon = Icons.Default.Description,
-            testTag = "tool_card_pdf_to_word"
-        ),
-        ToolItem(
-            type = ConversionType.PDF_TO_POWERPOINT,
-            title = "PDF to PowerPoint",
-            subtitle = "PPT & PPTX SLIDESHOW",
-            description = "Turn your PDF pages into easy to edit PPT and PPTX slideshows with 16:9 widescreen presentation layout.",
-            category = ToolCategory.CONVERT,
-            badge = "SLIDES",
-            accentColor = Color(0xFFEA580C),
-            icon = Icons.Default.Slideshow,
-            testTag = "tool_card_pdf_to_powerpoint"
-        ),
-        ToolItem(
-            type = ConversionType.PDF_TO_EXCEL,
-            title = "PDF to Excel",
-            subtitle = "SPREADSHEET & CSV",
-            description = "Pull tabular data and numerical figures straight from PDFs into Excel spreadsheets in a few seconds.",
-            category = ToolCategory.CONVERT,
-            badge = "DATA",
-            accentColor = Color(0xFF059669),
-            icon = Icons.Default.TableChart,
-            testTag = "tool_card_pdf_to_excel"
-        ),
-        ToolItem(
-            type = ConversionType.WORD_TO_PDF,
-            title = "Word to PDF",
-            subtitle = "DOCX TO CLEAN PDF",
-            description = "Make DOC and DOCX files easy to read and share by converting them to clean, styled PDF documents.",
-            category = ToolCategory.CONVERT,
-            badge = "READER",
-            accentColor = Color(0xFF3B82F6),
-            icon = Icons.Default.PictureAsPdf,
-            testTag = "tool_card_word_to_pdf"
-        ),
-        ToolItem(
-            type = ConversionType.POWERPOINT_TO_PDF,
-            title = "PowerPoint to PDF",
-            subtitle = "PRESENTATION HANDOUTS",
-            description = "Make PPT and PPTX slideshows easy to view by converting them to crisp PDF presentation handouts.",
-            category = ToolCategory.CONVERT,
-            badge = "DECKS",
-            accentColor = Color(0xFFD97706),
-            icon = Icons.Default.Slideshow,
-            testTag = "tool_card_powerpoint_to_pdf"
-        ),
-        ToolItem(
-            type = ConversionType.EXCEL_TO_PDF,
-            title = "Excel to PDF",
-            subtitle = "TABULAR GRID REPORT",
-            description = "Make EXCEL spreadsheets easy to read by converting them to formatted PDF reports with zebra striping.",
-            category = ToolCategory.CONVERT,
-            badge = "TABLES",
-            accentColor = Color(0xFF10B981),
-            icon = Icons.Default.TableChart,
-            testTag = "tool_card_excel_to_pdf"
-        ),
         ToolItem(
             type = ConversionType.PDF_TO_IMAGES,
             title = "PDF to JPG",
@@ -389,32 +322,6 @@ object ToolCatalog {
             accentColor = Color(0xFF1E293B),
             icon = Icons.Default.VisibilityOff,
             testTag = "tool_card_redact_pdf"
-        ),
-
-        // ==========================================
-        // Group 6: PDF Intelligence - AI-assisted tools
-        // ==========================================
-        ToolItem(
-            type = ConversionType.AI_SUMMARIZER,
-            title = "AI Summarizer",
-            subtitle = "KEY POINTS & BULLETS",
-            description = "Quickly generate concise summaries from articles, contracts, and essays with executive key points in seconds.",
-            category = ToolCategory.AI_INTELLIGENCE,
-            badge = "AI CORE",
-            accentColor = Color(0xFF8B5CF6),
-            icon = Icons.Default.AutoAwesome,
-            testTag = "tool_card_ai_summarizer"
-        ),
-        ToolItem(
-            type = ConversionType.TRANSLATE_PDF,
-            title = "Translate PDF",
-            subtitle = "MULTI-LANGUAGE TRANSLATE",
-            description = "Easily translate PDF files powered by AI into 15+ languages while preserving layout, fonts, and readability.",
-            category = ToolCategory.AI_INTELLIGENCE,
-            badge = "AI TRANSLATE",
-            accentColor = CyanAccent,
-            icon = Icons.Default.Translate,
-            testTag = "tool_card_translate_pdf"
         )
     )
 

@@ -164,9 +164,6 @@ fun UniversalPdfWorkbench(
     var allowPrinting by remember { mutableStateOf(true) }
 
     // AI Summarizer & Translate
-    var summaryDepth by remember { mutableStateOf("MEDIUM") }
-    var summaryTone by remember { mutableStateOf("EXECUTIVE") }
-    var targetLanguage by remember { mutableStateOf("Spanish") }
 
     // Signature Pad Path Points
     val signaturePoints = remember { mutableStateListOf<Offset?>() }
@@ -863,56 +860,6 @@ fun UniversalPdfWorkbench(
                             }
 
                             // ------------------------------------------
-                            // AI SUMMARIZER CONTROLS
-                            // ------------------------------------------
-                            ConversionType.AI_SUMMARIZER -> {
-                                Text("Summary Depth:", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    listOf("SHORT" to "Bullets", "MEDIUM" to "Executive", "DETAILED" to "In-Depth").forEach { (d, l) ->
-                                        FilterChip(
-                                            selected = summaryDepth == d,
-                                            onClick = { summaryDepth = d },
-                                            label = { Text(l, fontSize = 10.sp) },
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                    }
-                                }
-                                Text("Tone:", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    listOf("EXECUTIVE", "TECHNICAL", "SIMPLE").forEach { t ->
-                                        FilterChip(
-                                            selected = summaryTone == t,
-                                            onClick = { summaryTone = t },
-                                            label = { Text(t, fontSize = 10.sp) },
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                    }
-                                }
-                            }
-
-                            // ------------------------------------------
-                            // TRANSLATE PDF CONTROLS
-                            // ------------------------------------------
-                            ConversionType.TRANSLATE_PDF -> {
-                                Text("Target Language:", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    listOf("Spanish", "French", "German", "Hindi", "Japanese", "Chinese", "Arabic", "Portuguese").forEach { lang ->
-                                        FilterChip(
-                                            selected = targetLanguage == lang,
-                                            onClick = { targetLanguage = lang },
-                                            label = { Text(lang, fontSize = 10.sp) }
-                                        )
-                                    }
-                                }
-                            }
-
-                            // ------------------------------------------
                             // HTML TO PDF CONTROLS
                             // ------------------------------------------
                             ConversionType.HTML_TO_PDF -> {
@@ -998,48 +945,6 @@ fun UniversalPdfWorkbench(
                             }
 
                             // ------------------------------------------
-                            // WORD TO PDF
-                            // ------------------------------------------
-                            ConversionType.WORD_TO_PDF -> {
-                                OutlinedTextField(
-                                    value = customTextInput,
-                                    onValueChange = { customTextInput = it },
-                                    label = { Text("Word / Doc Text Content") },
-                                    placeholder = { Text("Type or paste document paragraphs here...") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    minLines = 4
-                                )
-                            }
-
-                            // ------------------------------------------
-                            // POWERPOINT TO PDF
-                            // ------------------------------------------
-                            ConversionType.POWERPOINT_TO_PDF -> {
-                                OutlinedTextField(
-                                    value = customTextInput,
-                                    onValueChange = { customTextInput = it },
-                                    label = { Text("Slide Deck Content (Separate slides with --- SLIDE ---)") },
-                                    placeholder = { Text("Slide 1: Executive Overview\n\n--- SLIDE ---\nSlide 2: Roadmap") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    minLines = 4
-                                )
-                            }
-
-                            // ------------------------------------------
-                            // EXCEL TO PDF
-                            // ------------------------------------------
-                            ConversionType.EXCEL_TO_PDF -> {
-                                OutlinedTextField(
-                                    value = customTextInput,
-                                    onValueChange = { customTextInput = it },
-                                    label = { Text("Spreadsheet CSV / Table Data (Comma separated)") },
-                                    placeholder = { Text("Item,Category,Units,Price,Total\nServer Hosting,Cloud,12,$100,$1200") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    minLines = 4
-                                )
-                            }
-
-                            // ------------------------------------------
                             // REDACT PDF
                             // ------------------------------------------
                             ConversionType.REDACT_PDF -> {
@@ -1096,9 +1001,6 @@ fun UniversalPdfWorkbench(
                                 pageFmt = pageNumFormat,
                                 pagePos = pageNumPosition,
                                 password = passwordInput,
-                                summaryDepth = summaryDepth,
-                                summaryTone = summaryTone,
-                                targetLang = targetLanguage,
                                 htmlContent = customTextInput,
                                 signaturePoints = signaturePoints.filterNotNull(),
                                 penColorInt = penColor.let { AndroidColor.rgb((it.red * 255).toInt(), (it.green * 255).toInt(), (it.blue * 255).toInt()) },

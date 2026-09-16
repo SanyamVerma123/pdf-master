@@ -16,12 +16,6 @@ enum class ConversionType {
     OCR_PDF,
 
     // Convert - PDF to and from other formats
-    PDF_TO_WORD,
-    PDF_TO_POWERPOINT,
-    PDF_TO_EXCEL,
-    WORD_TO_PDF,
-    POWERPOINT_TO_PDF,
-    EXCEL_TO_PDF,
     PDF_TO_IMAGES,
     IMAGE_TO_PDF,
     HTML_TO_PDF,
@@ -41,10 +35,6 @@ enum class ConversionType {
     PROTECT_PDF,
     COMPARE_PDF,
     REDACT_PDF,
-
-    // PDF Intelligence - AI-assisted tools
-    AI_SUMMARIZER,
-    TRANSLATE_PDF,
 
     // Aliases / Compatibility
     PHOTO_OCR_TO_PDF,

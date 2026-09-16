@@ -907,9 +907,6 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
         pageFmt: String = "Page {n} of {total}",
         pagePos: String = "BOTTOM_CENTER",
         password: String = "",
-        summaryDepth: String = "MEDIUM",
-        summaryTone: String = "EXECUTIVE",
-        targetLang: String = "Spanish",
         htmlContent: String = "",
         signaturePoints: List<androidx.compose.ui.geometry.Offset> = emptyList(),
         penColorInt: Int = android.graphics.Color.BLACK,
@@ -1071,36 +1068,6 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                         }
                         outputFile = file
                     }
-                    ConversionType.PDF_TO_WORD -> {
-                        if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
-                        _conversionState.value = ConversionUiState.Processing(3, 10, "Converting PDF to Microsoft Word (.doc)...")
-                        outputFile = com.example.engine.AdvancedPdfEngine.convertPdfToWord(
-                            context = app,
-                            pdfUri = pdfUri
-                        ) { cur, tot ->
-                            _conversionState.value = ConversionUiState.Processing(cur, tot, "Converting page $cur of $tot")
-                        }
-                    }
-                    ConversionType.PDF_TO_POWERPOINT -> {
-                        if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
-                        _conversionState.value = ConversionUiState.Processing(3, 10, "Converting PDF to PowerPoint slideshow (.pptx)...")
-                        outputFile = com.example.engine.AdvancedPdfEngine.convertPdfToPowerPoint(
-                            context = app,
-                            pdfUri = pdfUri
-                        ) { cur, tot ->
-                            _conversionState.value = ConversionUiState.Processing(cur, tot, "Converting slide $cur of $tot")
-                        }
-                    }
-                    ConversionType.PDF_TO_EXCEL -> {
-                        if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
-                        _conversionState.value = ConversionUiState.Processing(3, 10, "Extracting tabular data to Spreadsheet (.csv)...")
-                        outputFile = com.example.engine.AdvancedPdfEngine.convertPdfToExcel(
-                            context = app,
-                            pdfUri = pdfUri
-                        ) { cur, tot ->
-                            _conversionState.value = ConversionUiState.Processing(cur, tot, "Extracting table $cur of $tot")
-                        }
-                    }
                     ConversionType.HTML_TO_PDF -> {
                         _conversionState.value = ConversionUiState.Processing(3, 10, "Rendering HTML markup to PDF...")
                         outputFile = com.example.engine.AdvancedPdfEngine.convertHtmlToPdf(
@@ -1119,31 +1086,6 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                         ) { cur, tot ->
                             _conversionState.value = ConversionUiState.Processing(cur, tot, "Preserving archival tags $cur of $tot")
                         }
-                    }
-                    ConversionType.AI_SUMMARIZER -> {
-                        if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
-                        _conversionState.value = ConversionUiState.Processing(3, 10, "Synthesizing document insights with AI...")
-                        val (file, _) = com.example.engine.AdvancedPdfEngine.summarizePdf(
-                            context = app,
-                            pdfUri = pdfUri,
-                            lengthMode = summaryDepth,
-                            tone = summaryTone
-                        ) { cur, tot ->
-                            _conversionState.value = ConversionUiState.Processing(cur, tot, "Analyzing page $cur of $tot")
-                        }
-                        outputFile = file
-                    }
-                    ConversionType.TRANSLATE_PDF -> {
-                        if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
-                        _conversionState.value = ConversionUiState.Processing(3, 10, "Translating text into $targetLang...")
-                        val (file, _) = com.example.engine.AdvancedPdfEngine.translatePdf(
-                            context = app,
-                            pdfUri = pdfUri,
-                            targetLanguage = targetLang
-                        ) { cur, tot ->
-                            _conversionState.value = ConversionUiState.Processing(cur, tot, "Translating page $cur of $tot")
-                        }
-                        outputFile = file
                     }
                     ConversionType.EDIT_PDF -> {
                         if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
@@ -1192,33 +1134,6 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                             rotations = emptyMap()
                         ) { cur, tot ->
                             _conversionState.value = ConversionUiState.Processing(cur, tot, "Organizing page $cur of $tot")
-                        }
-                    }
-                    ConversionType.WORD_TO_PDF -> {
-                        _conversionState.value = ConversionUiState.Processing(3, 10, "Converting Word document to PDF...")
-                        outputFile = com.example.engine.AdvancedPdfEngine.convertWordToPdf(
-                            context = app,
-                            docContent = htmlContent
-                        ) { cur, tot ->
-                            _conversionState.value = ConversionUiState.Processing(cur, tot, "Formatting page $cur of $tot")
-                        }
-                    }
-                    ConversionType.POWERPOINT_TO_PDF -> {
-                        _conversionState.value = ConversionUiState.Processing(3, 10, "Converting Presentation to PDF...")
-                        outputFile = com.example.engine.AdvancedPdfEngine.convertPowerPointToPdf(
-                            context = app,
-                            presentationContent = htmlContent
-                        ) { cur, tot ->
-                            _conversionState.value = ConversionUiState.Processing(cur, tot, "Rendering slide $cur of $tot")
-                        }
-                    }
-                    ConversionType.EXCEL_TO_PDF -> {
-                        _conversionState.value = ConversionUiState.Processing(3, 10, "Converting Spreadsheet to PDF report...")
-                        outputFile = com.example.engine.AdvancedPdfEngine.convertExcelToPdf(
-                            context = app,
-                            csvOrTableContent = htmlContent
-                        ) { cur, tot ->
-                            _conversionState.value = ConversionUiState.Processing(cur, tot, "Building grid table $cur of $tot")
                         }
                     }
                     else -> {
