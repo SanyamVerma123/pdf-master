@@ -816,10 +816,11 @@ object AdvancedPdfEngine {
                 if (cont.isActive) cont.resume(view?.measuredHeight ?: 0)
             }
         }
+        val content = html ?: ""
         if (isUrl) {
-            webView.loadUrl(html)
+            webView.loadUrl(content)
         } else {
-            webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            webView.loadDataWithBaseURL(null, content, "text/html", "UTF-8", null)
         }
         cont.invokeOnCancellation { webView.destroy() }
     }
@@ -861,10 +862,11 @@ object AdvancedPdfEngine {
                 if (cont.isActive) cont.resume(bmp)
             }
         }
+        val content = html ?: ""
         if (isUrl) {
-            webView.loadUrl(html)
+            webView.loadUrl(content)
         } else {
-            webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            webView.loadDataWithBaseURL(null, content, "text/html", "UTF-8", null)
         }
         cont.invokeOnCancellation { webView.destroy() }
     }
