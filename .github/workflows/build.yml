@@ -13,14 +13,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
-      # AGP 9.1.1 + Gradle 9.3.1 + compileSdk 36 need a modern JDK.
+      # AGP 9.x + Gradle 9.x + compileSdk 36 need a modern JDK.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
-      # ubuntu-latest already ships the Android SDK with platform 36.
       - name: Build debug APK
         id: build
         run: |
@@ -41,11 +42,19 @@ jobs:
             echo "=== dist ==="
             ls -la dist/ 2>&1
           } 2>&1 | tee build.log
-          # fail the step if no APK was produced
           if [ ! -s dist/app-debug.apk ]; then
             echo "FATAL: no APK produced - see build.log"
             exit 1
           fi
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Upload APK artifact
         if: always()
@@ -63,7 +72,9 @@ jobs:
           tag_name: omnipdf-${{ github.run_number }}
           name: OmniPDF v${{ github.run_number }}
           body: Automatic debug build of ${{ github.sha }}
-          files: dist/app-debug.apk
+          files: |
+            dist/app-debug.apk
+            build.log
           fail_on_unmatched_files: false
 
       - name: Publish build log
