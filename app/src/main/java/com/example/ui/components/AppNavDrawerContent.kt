@@ -35,6 +35,7 @@ import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,7 +57,7 @@ fun AppNavDrawerContent(
     isDarkTheme: Boolean,
     onToggleTheme: () -> Unit,
     onSelectScreen: (AppScreen) -> Unit,
-    userEmail: String = "madhubala2079@gmail.com",
+    userEmail: String = remember { com.example.ui.components.generateDeviceEmail() },
     modifier: Modifier = Modifier
 ) {
     Column(

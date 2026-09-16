@@ -1,0 +1,361 @@
+package com.example.engine
+
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.security.MessageDigest
+
+/**
+ * Real PDF password protection (PDF 1.4 spec, section 3.5.2, Algorithms 2-7):
+ * standard V2 / R3 40-bit RC4 owner+user password encryption.
+ *
+ * This is genuine PDF encryption - Acrobat, Preview, and every compliant viewer
+ * prompt for the password and refuse the file without it. RC4 is a stream
+ * cipher, so ciphertext length always equals plaintext length; that invariant
+ * is what lets us encrypt a finished PDF in place and keep every object offset
+ * valid. Only object payloads (literal strings and stream data) are encrypted;
+ * a new /Encrypt object is appended and the xref table is rebuilt.
+ *
+ * Works on the classic xref-table PDFs produced by android.graphics.pdf.PdfDocument
+ * (every file this app generates). Files using cross-reference streams are
+ * rejected with a clear message rather than corrupted.
+ */
+internal object PdfCrypto {
+
+    private val PAD = byteArrayOf(
+        0x28, 0xBF.toByte(), 0x4E, 0x5E, 0x4E, 0x75, 0x8A.toByte(), 0x41,
+        0x64, 0x00, 0x4E, 0x56, 0xFF.toByte(), 0xFA.toByte(), 0x01, 0x08,
+        0x2E, 0x2E, 0x00, 0xB6.toByte(), 0xD0.toByte(), 0x68, 0x3E, 0x80,
+        0x2F, 0x0C, 0xA9.toByte(), 0xFE.toByte(), 0x64, 0x53, 0x69, 0x7A
+    )
+
+    private const val PERMS = 0xFFFFFFFC.toInt()
+    private const val KEYLEN = 5
+
+    private class ObjInfo(val num: Int, val start: Int, val payloadStart: Int, val payloadEnd: Int)
+
+    private fun md5(data: ByteArray): ByteArray = MessageDigest.getInstance("MD5").digest(data)
+
+    private fun pad(pw: String): ByteArray {
+        val raw = pw.toByteArray(Charsets.UTF_8)
+        val out = ByteArray(32)
+        val n = minOf(raw.size, 32)
+        System.arraycopy(raw, 0, out, 0, n)
+        if (n < 32) System.arraycopy(PAD, 0, out, n, 32 - n)
+        return out
+    }
+
+    private fun rc4(key: ByteArray, data: ByteArray): ByteArray {
+        val s = IntArray(256) { it }
+        var j = 0
+        for (i in 0 until 256) {
+            j = (j + s[i] + (key[i % key.size].toInt() and 0xFF)) and 0xFF
+            val t = s[i]; s[i] = s[j]; s[j] = t
+        }
+        val out = ByteArray(data.size)
+        var x = 0; var y = 0
+        for (k in data.indices) {
+            x = (x + 1) and 0xFF
+            y = (y + s[x]) and 0xFF
+            val t = s[x]; s[x] = s[y]; s[y] = t
+            out[k] = (data[k].toInt() xor s[(s[x] + s[y]) and 0xFF]).toByte()
+        }
+        return out
+    }
+
+    private fun objKey(base: ByteArray, num: Int, gen: Int): ByteArray {
+        // Algorithm 3.1: the per-object RC4 key is MD5(fileKey + num + gen),
+        // truncated to min(n + 5, 16) bytes - NOT to n. Truncating to n makes
+        // every compliant viewer decrypt streams to garbage while still
+        // accepting the password.
+        val n = base.size
+        val ext = ByteArray(n + 5)
+        System.arraycopy(base, 0, ext, 0, n)
+        ext[n] = (num and 0xFF).toByte()
+        ext[n + 1] = ((num shr 8) and 0xFF).toByte()
+        ext[n + 2] = ((num shr 16) and 0xFF).toByte()
+        ext[n + 3] = (gen and 0xFF).toByte()
+        ext[n + 4] = ((gen shr 8) and 0xFF).toByte()
+        return md5(ext).sliceArray(0 until minOf(n + 5, 16))
+    }
+
+    private fun intLe4(v: Int): ByteArray =
+        byteArrayOf(v.toByte(), (v shr 8).toByte(), (v shr 16).toByte(), (v shr 24).toByte())
+
+    private fun toHex(b: ByteArray): String {
+        val sb = StringBuilder(b.size * 2)
+        for (x in b) sb.append("%02X".format(x))
+        return sb.toString()
+    }
+
+    private fun fromHex(hex: String): ByteArray {
+        val clean = hex.replace(Regex("[^0-9A-Fa-f]"), "")
+        val out = ByteArray(clean.length / 2)
+        for (k in out.indices) {
+            out[k] = ((Character.digit(clean[k * 2], 16) shl 4) or Character.digit(clean[k * 2 + 1], 16)).toByte()
+        }
+        return out
+    }
+
+    private fun findKw(b: ByteArray, kw: String, from: Int): Int {
+        val k = kw.toByteArray(Charsets.ISO_8859_1)
+        outer@ for (i in from..(b.size - k.size)) {
+            for (j in k.indices) if (b[i + j] != k[j]) continue@outer
+            return i
+        }
+        return -1
+    }
+
+    private fun parseObjects(raw: ByteArray): List<ObjInfo> {
+        val text = String(raw, Charsets.ISO_8859_1)
+        val objRegex = Regex("(?m)^(\\d+)\\s+(\\d+)\\s+obj\\b")
+        val objs = mutableListOf<ObjInfo>()
+        for (m in objRegex.findAll(text)) {
+            val payloadStart = m.range.last + 1
+            val end = findKw(raw, "endobj", payloadStart)
+            if (end > payloadStart) {
+                objs.add(ObjInfo(m.groupValues[1].toInt(), m.range.first, payloadStart, end))
+            }
+        }
+        return objs
+    }
+
+    private fun xrefTablePos(raw: ByteArray): Int {
+        // Classic xref table only. Position is taken from the original (unencrypted)
+        // bytes; offsets stay identical after encryption because RC4 preserves length.
+        var i = raw.lastIndexOf("startxref".toByteArray(Charsets.ISO_8859_1))
+        if (i < 0) return -1
+        // walk back to the "xref" keyword that startxref points at
+        var x = raw.lastIndexOf("xref".toByteArray(Charsets.ISO_8859_1), i)
+        return x
+    }
+
+    /**
+     * Encrypts [src] into [dst], protected with [userPassword] (and [ownerPassword]
+     * when distinct). Returns dst.
+     */
+    fun encrypt(src: File, dst: File, userPassword: String, ownerPassword: String = userPassword): File {
+        require(userPassword.isNotEmpty()) { "Password must not be empty" }
+        val raw = src.readBytes()
+        require(raw.size > 16 && raw.startsWith("%PDF".toByteArray())) { "Not a valid PDF" }
+
+        val xrefPos = xrefTablePos(raw)
+        require(xrefPos > 0) { "This PDF uses a cross-reference stream and cannot be re-encrypted." }
+
+        val objs = parseObjects(raw)
+        require(objs.isNotEmpty()) { "No PDF objects found to encrypt" }
+        require(objs.all { it.start < xrefPos }) { "Unexpected object layout; refusing to encrypt." }
+
+        val fileId = readOrSynthesizeFileId(raw)
+        val (key, oVal, uVal) = derive(userPassword, ownerPassword, fileId)
+
+        // 1) Encrypt every object payload in place. Length is preserved.
+        val out = raw.copyOf()
+        for (o in objs) {
+            val payload = out.sliceArray(o.payloadStart until o.payloadEnd)
+            System.arraycopy(encryptPayload(payload, o.num, 0, key), 0, out, o.payloadStart, payload.size)
+        }
+
+        // 2) Append the /Encrypt object, then a rebuilt xref table + trailer.
+        val encObjNum = objs.maxOf { it.num } + 1
+        // The U value is the 16-byte hash result plus 16 bytes of arbitrary
+        // padding; we use the standard padding constant, which viewers ignore.
+        val encryptObj = (
+            "%d 0 obj\n" +
+            "<< /Filter /Standard /V 2 /R 3 /Length 40 /P %d /O <%s> /U <%s> >>\n" +
+            "endobj\n"
+        ).format(encObjNum, PERMS, toHex(oVal), toHex(uVal + PAD.sliceArray(0 until 16)))
+
+        val result = ByteArrayOutputStream(out.size + 4096)
+        result.write(out, 0, xrefPos)                     // encrypted body, offsets unchanged
+        val encObjOffset = result.size()
+        result.write(encryptObj.toByteArray(Charsets.ISO_8859_1))
+
+        val xrefOffset = result.size()
+        val sb = StringBuilder()
+        sb.append("xref\n0 ").append(encObjNum + 1).append('\n')
+        sb.append("0000000000 65535 f \n")
+        for (i in 1 until encObjNum) {
+            val o = objs.firstOrNull { it.num == i }
+            if (o != null) sb.append("%010d 00000 n \n".format(o.start))
+            else sb.append("0000000000 00000 f \n")
+        }
+        sb.append("%010d 00000 n \n".format(encObjOffset))
+        result.write(sb.toString().toByteArray(Charsets.ISO_8859_1))
+
+        // Preserve the original trailer dict (it carries /Root), injecting
+        // /Encrypt and updating /Size. RC4 preserves byte length, so every body
+        // object's offset in the original xref stays valid.
+        val origTrailer = String(raw, raw.lastIndexOf("trailer".toByteArray(Charsets.ISO_8859_1)), xrefPos - raw.lastIndexOf("trailer".toByteArray(Charsets.ISO_8859_1)), Charsets.ISO_8859_1)
+        var tr = origTrailer.replace(Regex("/Size\\s+\\d+"), "/Size ${encObjNum + 1}")
+        tr = tr.replaceFirst("<<", "<< /Encrypt $encObjNum 0 R", 1)
+        result.write(tr.toByteArray(Charsets.ISO_8859_1))
+        result.write("startxref\n$xrefOffset\n%%EOF\n".toByteArray())
+
+        dst.writeBytes(result.toByteArray())
+        return dst
+    }
+
+    private fun encryptPayload(payload: ByteArray, num: Int, gen: Int, key: ByteArray): ByteArray {
+        val b = payload.copyOf()
+        var i = 0
+        var inStream = false
+        while (i < b.size) {
+            if (!inStream) {
+                val s = findKw(b, "stream", i)
+                if (s < 0) { encryptStrings(b, i, b.size, num, gen, key); break }
+                encryptStrings(b, i, s, num, gen, key)
+                var d = s + "stream".length
+                if (d < b.size && b[d] == 0x0D.toByte()) d++
+                if (d < b.size && b[d] == 0x0A.toByte()) d++
+                i = d
+                inStream = true
+            } else {
+                val e = findKw(b, "endstream", i)
+                if (e < 0) break
+                var end = e
+                if (end - 1 >= i && b[end - 1] == 0x0A.toByte()) end--
+                if (end - 1 >= i && b[end - 1] == 0x0D.toByte()) end--
+                if (i < end) System.arraycopy(rc4(objKey(key, num, gen), b.sliceArray(i until end)), 0, b, i, end - i)
+                i = e + "endstream".length
+                inStream = false
+            }
+        }
+        return b
+    }
+
+    /**
+     * Encrypts PDF literal strings "( ... )" within [from, to). Backslash escapes
+     * are respected so a "(" inside a string never terminates it.
+     */
+    private fun encryptStrings(b: ByteArray, from: Int, to: Int, num: Int, gen: Int, key: ByteArray) {
+        var i = from
+        while (i < to) {
+            if (b[i] != 0x28.toByte()) { i++; continue }
+            val start = i + 1
+            i++
+            while (i < to) {
+                when (b[i]) {
+                    0x5C.toByte() -> i += 2
+                    0x29.toByte() -> break
+                    else -> i++
+                }
+            }
+            if (i < to) {
+                if (i > start) {
+                    val enc = rc4(objKey(key, num, gen), b.sliceArray(start until i))
+                    System.arraycopy(enc, 0, b, start, enc.size)
+                }
+                i++
+            }
+        }
+    }
+
+    private fun readOrSynthesizeFileId(raw: ByteArray): ByteArray {
+        val t = String(raw, Charsets.ISO_8859_1)
+        val m = Regex("/ID\\s*\\[\\s*<([^>]*)>").find(t)
+        if (m != null) {
+            val id = fromHex(m.groupValues[1])
+            if (id.size == 16) return id
+        }
+        return md5((System.nanoTime().toString() + raw.size).toByteArray())
+    }
+
+    private fun derive(userPw: String, ownerPw: String, fileId: ByteArray): Triple<ByteArray, ByteArray, ByteArray> {
+        // Algorithm 3: owner password hash.
+        var oh = md5(pad(ownerPw))
+        repeat(50) { oh = md5(oh) }
+        val rc4Key = oh.sliceArray(0 until KEYLEN)
+
+        val userPad = pad(userPw)
+        var oVal = rc4(rc4Key, userPad)
+        repeat(19) { idx ->
+            val k = ByteArray(KEYLEN) { rc4Key[it] xor (idx + 1).toByte() }
+            oVal = rc4(k, oVal)
+        }
+
+        // Algorithm 2: file encryption key.
+        var hash = md5(userPad + oVal + intLe4(PERMS) + fileId)
+        repeat(50) { hash = md5(hash.sliceArray(0 until KEYLEN)) }
+        val key = hash.sliceArray(0 until KEYLEN)
+
+        // Algorithm 5: user password value. Hash the PADDING CONSTANT plus the
+        // file id - NOT the padded password. (The padded password is only used
+        // in Algorithm 2.)
+        val uh = md5(PAD + fileId)
+        var uVal = rc4(key, uh)
+        repeat(19) { idx ->
+            val k = ByteArray(KEYLEN) { key[it] xor (idx + 1).toByte() }
+            uVal = rc4(k, uVal)
+        }
+        return Triple(key, oVal, uVal)
+    }
+
+    /** True when [file] already carries a standard /Encrypt dictionary. */
+    fun isEncrypted(file: File): Boolean = try {
+        val text = String(file.readBytes(), Charsets.ISO_8859_1)
+        text.contains("/Encrypt") && text.contains("/Standard")
+    } catch (_: Exception) { false }
+
+    /**
+     * Removes protection from a file the caller has authorized with [password].
+     * Writes the decrypted file to [dst] and returns it.
+     */
+    fun decrypt(src: File, dst: File, password: String): File {
+        val raw = src.readBytes()
+        val text = String(raw, Charsets.ISO_8859_1)
+        val encRef = Regex("/Encrypt\\s+(\\d+)\\s+(\\d+)\\s+R").find(text)
+            ?: throw IllegalStateException("This PDF is not password protected.")
+        val encNum = encRef.groupValues[1].toInt()
+
+        val encObjMatch = Regex("(?m)^${encNum}\\s+0\\s+obj\\b").find(text)
+            ?: throw IllegalStateException("Could not locate the encryption dictionary.")
+        val encDictEnd = findKw(raw, "endobj", encObjMatch.range.last + 1)
+        val encText = text.substring(encObjMatch.range.last + 1, encDictEnd)
+
+        val oVal = fromHex(Regex("/O\\s*<([^>]*)>").find(encText)?.groupValues?.get(1)
+            ?: throw IllegalStateException("Malformed encryption dictionary (missing /O)."))
+        val uVal = fromHex(Regex("/U\\s*<([^>]*)>").find(encText)?.groupValues?.get(1)
+            ?: throw IllegalStateException("Malformed encryption dictionary (missing /U)."))
+        val pVal = Regex("/P\\s+(-?\\d+)").find(encText)?.groupValues?.get(1)?.toInt() ?: PERMS
+
+        val idMatch = Regex("/ID\\s*\\[\\s*<([^>]*)>").find(text)
+        val fileId = if (idMatch != null) fromHex(idMatch.groupValues[1]) else ByteArray(0)
+        if (fileId.size != 16) throw IllegalStateException("Could not read the document ID.")
+
+        val key = deriveKeyFromUserPassword(password, oVal, pVal, fileId)
+        checkUserPassword(key, uVal, fileId, password)
+
+        val objs = parseObjects(raw)
+        val out = raw.copyOf()
+        for (o in objs) {
+            if (o.num == encNum) continue               // never decrypt the /Encrypt dict
+            val payload = out.sliceArray(o.payloadStart until o.payloadEnd)
+            System.arraycopy(decryptPayload(payload, o.num, 0, key), 0, out, o.payloadStart, payload.size)
+        }
+
+        // Drop the encryption object and strip /Encrypt from the trailer.
+        val stripped = ByteArrayOutputStream(raw.size)
+        stripped.write(out, 0, encObjMatch.range.first)
+        stripped.write(out, encDictEnd, out.size - encDictEnd)
+        var t = String(stripped.toByteArray(), Charsets.ISO_8859_1)
+        t = t.replaceFirst(Regex("/Encrypt\\s+\\d+\\s+\\d+\\s+R\\s*"), "")
+        dst.writeBytes(t.toByteArray(Charsets.ISO_8859_1))
+        return dst
+    }
+
+    private fun deriveKeyFromUserPassword(pw: String, oVal: ByteArray, pVal: Int, fileId: ByteArray): ByteArray {
+        var hash = md5(pad(pw) + oVal + intLe4(pVal) + fileId)
+        repeat(50) { hash = md5(hash) }
+        return hash.sliceArray(0 until 5)
+    }
+
+    private fun checkUserPassword(key: ByteArray, uVal: ByteArray, fileId: ByteArray, pw: String) {
+        val expected = rc4(key, md5(PAD + fileId))
+        if (!expected.contentEquals(uVal.sliceArray(0 until expected.size))) {
+            throw IllegalStateException("Incorrect password. Please check and try again.")
+        }
+    }
+
+    private fun decryptPayload(payload: ByteArray, num: Int, gen: Int, key: ByteArray): ByteArray =
+        encryptPayload(payload, num, gen, key)
+}

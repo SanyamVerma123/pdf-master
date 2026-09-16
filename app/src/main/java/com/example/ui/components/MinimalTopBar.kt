@@ -38,7 +38,6 @@ import com.example.ui.theme.CrimsonPrimary
 
 @Composable
 fun MinimalTopBar(
-    totalDocuments: Int,
     isDarkTheme: Boolean,
     onToggleTheme: () -> Unit,
     onOpenDrawer: () -> Unit,
@@ -171,36 +170,6 @@ fun MinimalTopBar(
                 }
             }
 
-            // Document Count Badge
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(MaterialTheme.colorScheme.surface)
-                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(20.dp))
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(if (totalDocuments > 0) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant)
-                    )
-                    Text(
-                        text = "$totalDocuments DOCS",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    )
-                }
-            }
         }
     }
 }

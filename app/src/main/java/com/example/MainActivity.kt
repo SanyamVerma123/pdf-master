@@ -145,7 +145,6 @@ fun OmniPdfApp(
                         scope.launch { drawerState.close() }
                         viewModel.navigateTo(screen)
                     },
-                    userEmail = "madhubala2079@gmail.com"
                 )
             }
         }
@@ -174,7 +173,6 @@ fun OmniPdfApp(
                             // Top Bar with 3-Lines Hamburger Menu Button on top left
                             item {
                                 MinimalTopBar(
-                                    totalDocuments = historyRecords.size,
                                     isDarkTheme = isDarkTheme,
                                     onToggleTheme = { viewModel.toggleThemeMode() },
                                     onOpenDrawer = {
@@ -352,7 +350,6 @@ fun OmniPdfApp(
                     // ====================================================
                     is AppScreen.Account -> {
                         AccountScreen(
-                            userEmail = "madhubala2079@gmail.com",
                             totalDocuments = historyRecords.size,
                             totalSizeBytes = historyRecords.sumOf { it.fileSizeBytes },
                             onBack = { viewModel.navigateBack() }

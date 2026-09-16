@@ -516,55 +516,102 @@ object AdvancedPdfEngine {
         allowCopying: Boolean = false,
         onProgress: (Int, Int) -> Unit
     ): File = withContext(Dispatchers.IO) {
+        require(password.isNotEmpty()) { "Password must not be empty." }
+
+        // Stage 1: render the source PDF to a clean, self-contained PDF that we
+        // know how to encrypt (classic xref table, no cross-reference streams).
         val bitmaps = PdfEngine.renderAllPagesFromPdfUri(context, pdfUri)
         if (bitmaps.isEmpty()) throw IllegalStateException("Could not read PDF for encryption.")
 
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val staged = File(context.cacheDir, "protect_stage_$timestamp.pdf")
         val doc = PdfDocument()
-        bitmaps.forEachIndexed { i, bmp ->
-            onProgress(i + 1, bitmaps.size)
-            val pageInfo = PdfDocument.PageInfo.Builder(bmp.width, bmp.height, i + 1).create()
-            val page = doc.startPage(pageInfo)
-            page.canvas.drawBitmap(bmp, 0f, 0f, null)
-
-            // Draw lock banner watermark subtly
-            val bannerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(40, 220, 38, 38)
-                textSize = 14f
-                typeface = Typeface.MONOSPACE
+        try {
+            bitmaps.forEachIndexed { i, bmp ->
+                onProgress(i + 1, bitmaps.size)
+                val pageInfo = PdfDocument.PageInfo.Builder(bmp.width, bmp.height, i + 1).create()
+                val page = doc.startPage(pageInfo)
+                page.canvas.drawBitmap(bmp, 0f, 0f, null)
+                doc.finishPage(page)
             }
-            page.canvas.drawText("🔒 ENCRYPTED • AES-128 • PASSWORD PROTECTED", 24f, 30f, bannerPaint)
-            doc.finishPage(page)
+            FileOutputStream(staged).use { doc.writeTo(it) }
+        } finally {
+            doc.close()
         }
 
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        // Stage 2: apply genuine PDF encryption.
         val outFile = File(context.filesDir, "protected_secure_$timestamp.pdf")
-        FileOutputStream(outFile).use { doc.writeTo(it) }
-        doc.close()
-        outFile
+        return@withContext try {
+            PdfCrypto.encrypt(staged, outFile, password)
+        } finally {
+            staged.delete()
+        }
     }
 
     suspend fun unlockPdf(
         context: Context,
         pdfUri: Uri,
+        password: String,
         onProgress: (Int, Int) -> Unit
     ): File = withContext(Dispatchers.IO) {
-        val bitmaps = PdfEngine.renderAllPagesFromPdfUri(context, pdfUri)
-        if (bitmaps.isEmpty()) throw IllegalStateException("Could not read PDF for unlocking.")
-
-        val doc = PdfDocument()
-        bitmaps.forEachIndexed { i, bmp ->
-            onProgress(i + 1, bitmaps.size)
-            val pageInfo = PdfDocument.PageInfo.Builder(bmp.width, bmp.height, i + 1).create()
-            val page = doc.startPage(pageInfo)
-            page.canvas.drawBitmap(bmp, 0f, 0f, null)
-            doc.finishPage(page)
-        }
+        // When the source is not encrypted, "unlock" means the user wants a
+        // readable, unencumbered copy - just re-render it (also fixes files a
+        // viewer refuses to open).
+        val staged = PdfEngine.copyUriToTemp(context, pdfUri)
+            ?: throw IllegalStateException("Could not read the PDF file.")
 
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val outFile = File(context.filesDir, "unlocked_doc_$timestamp.pdf")
-        FileOutputStream(outFile).use { doc.writeTo(it) }
-        doc.close()
-        outFile
+
+        if (PdfCrypto.isEncrypted(staged)) {
+            require(password.isNotEmpty()) { "This PDF is password protected. Enter its password to unlock it." }
+            return@withContext try {
+                val plain = File(context.cacheDir, "unlock_stage_$timestamp.pdf")
+                PdfCrypto.decrypt(staged, plain, password)
+                // Re-render through PdfDocument so the output opens everywhere,
+                // including viewers that ignore removed /Encrypt dicts.
+                renderToNewPdf(context, plain, outFile, onProgress).also {
+                    plain.delete()
+                }
+            } finally {
+                staged.delete()
+            }
+        }
+
+        renderToNewPdf(context, staged, outFile, onProgress).also { staged.delete() }
+    }
+
+    private fun renderToNewPdf(
+        context: Context,
+        src: File,
+        dst: File,
+        onProgress: (Int, Int) -> Unit
+    ): File {
+        val pfd = ParcelFileDescriptor.open(src, ParcelFileDescriptor.MODE_READ_ONLY)
+        val renderer = PdfRenderer(pfd)
+        val doc = PdfDocument()
+        try {
+            val count = renderer.pageCount
+            for (i in 0 until count) {
+                onProgress(i + 1, count)
+                val page = renderer.openPage(i)
+                val bmp = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
+                bmp.eraseColor(Color.WHITE)
+                page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                page.close()
+                val info = PdfDocument.PageInfo.Builder(page.width, page.height, i + 1).create()
+                val docPage = doc.startPage(info)
+                docPage.canvas.drawBitmap(bmp, 0f, 0f, null)
+                doc.finishPage(docPage)
+                bmp.recycle()
+            }
+            FileOutputStream(dst).use { doc.writeTo(it) }
+        } finally {
+            doc.close()
+            renderer.close()
+            pfd.close()
+        }
+        return dst
     }
 
     // ==========================================
@@ -883,7 +930,7 @@ object AdvancedPdfEngine {
     }
 
     // Helper: extract text from Bitmap with Google ML Kit
-    private suspend fun extractTextFromBitmap(bitmap: Bitmap): String = withContext(Dispatchers.IO) {
+    suspend fun extractTextFromBitmap(bitmap: Bitmap): String = withContext(Dispatchers.IO) {
         suspendCancellableCoroutine { cont ->
             try {
                 val image = InputImage.fromBitmap(bitmap, 0)
@@ -921,5 +968,36 @@ object AdvancedPdfEngine {
             }
         }
         return if (result.isEmpty()) (0 until maxPages).toList() else result.toList().sorted()
+    }
+
+    // ==========================================
+    // 17. OCR PDF (make an existing PDF searchable)
+    // ==========================================
+    suspend fun ocrPdf(
+        context: Context,
+        pdfUri: Uri,
+        onProgress: (Int, Int) -> Unit
+    ): File = withContext(Dispatchers.IO) {
+        // Renders each page, runs on-device OCR on the render, and rebuilds the
+        // document with the recognized text as an invisible selectable layer
+        // over the page image plus a visible transcript page per source page.
+        val bitmaps = PdfEngine.renderAllPagesFromPdfUri(context, pdfUri)
+        if (bitmaps.isEmpty()) throw IllegalStateException("Could not read the PDF pages.")
+
+        val pages = bitmaps.mapIndexed { idx, bmp ->
+            onProgress(idx + 1, bitmaps.size)
+            val text = extractTextFromBitmap(bmp)
+            PdfEngine.OcrPagePublic(bmp, text.trim())
+        }
+
+        val config = TextPdfConfig(
+            title = "Searchable OCR Document",
+            fontSize = 12f,
+            lineSpacing = 1.3f,
+            margin = PageMargin.NORMAL,
+            showHeader = true,
+            showPageNumbers = true
+        )
+        PdfEngine.buildSearchableOcrPdf(pages, config) { cur, tot -> onProgress(cur, tot) }
     }
 }

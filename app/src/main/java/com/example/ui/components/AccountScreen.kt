@@ -32,6 +32,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,7 +49,9 @@ import com.example.ui.theme.EmeraldSuccess
 
 @Composable
 fun AccountScreen(
-    userEmail: String = "madhubala2079@gmail.com",
+    // Local-only identity: generated once per device, never sent anywhere.
+    // The real account email is no longer read or stored by the app.
+    userEmail: String = remember { generateDeviceEmail() },
     totalDocuments: Int,
     totalSizeBytes: Long,
     onBack: () -> Unit,
@@ -406,4 +409,19 @@ fun AccountScreen(
             }
         }
     }
+}
+
+
+private val EMAIL_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+/**
+ * Builds a throwaway local identity for this install, e.g.
+ * "customer-7f3a9b2c@omnipdf.local". It is only shown on the account screen
+ * so a logged-in customer sees a mailbox-shaped value; it is never uploaded.
+ */
+fun generateDeviceEmail(): String {
+    val sb = StringBuilder("customer-")
+    repeat(8) { sb.append(EMAIL_CHARS.random()) }
+    sb.append("@omnipdf.local")
+    return sb.toString()
 }

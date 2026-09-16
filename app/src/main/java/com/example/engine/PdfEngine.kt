@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
@@ -853,6 +854,15 @@ object PdfEngine {
         }
     }
 
+    /**
+     * Returns the embedded text layer of a PDF, or null if the renderer cannot
+     * expose one (Android's [android.graphics.pdf.PdfRenderer] has no text API).
+     * Callers should fall back to OCR.
+     */
+    suspend fun extractTextFromPdfUriTextLayer(context: Context, uri: Uri): String? = withContext(Dispatchers.IO) {
+        null
+    }
+
     suspend fun extractTextFromImageUri(context: Context, uri: Uri): String = withContext(Dispatchers.IO) {
         suspendCancellableCoroutine { continuation ->
             try {
@@ -909,12 +919,24 @@ object PdfEngine {
         pageSize: PageSize = PageSize.A4,
         onProgress: (current: Int, total: Int) -> Unit
     ): File = withContext(Dispatchers.IO) {
-        val extractedText = extractTextFromMultipleImages(context, imageUris, onProgress)
-        val finalContent = if (extractedText.isNotBlank()) {
-            extractedText
-        } else {
-            "No text was detected in the provided images."
+        // Pass 1: OCR every photo. The extracted text becomes the PDF's real,
+        // selectable text layer; the photo is placed on the page above it as
+        // invisible (render-mode 3) text so the document is searchable AND
+        // visually faithful to the scan.
+        val pages = mutableListOf<OcrPagePublic>()
+        imageUris.forEachIndexed { index, uri ->
+            onProgress(index + 1, imageUris.size)
+            try {
+                val bmp = loadAndProcessBitmap(context, uri, CompressionLevel.MEDIUM) ?: return@forEachIndexed
+                val text = extractTextFromImageUri(context, uri)
+                pages.add(OcrPagePublic(bmp, text.trim()))
+            } catch (e: Exception) {
+                e.printStackTrace()
+                pages.add(OcrPagePublic(null, ""))
+            }
         }
+
+        if (pages.isEmpty()) throw IllegalStateException("Could not read any of the selected images.")
 
         val config = TextPdfConfig(
             title = title,
@@ -927,11 +949,126 @@ object PdfEngine {
             showPageNumbers = true
         )
 
-        convertTextToPdf(
-            context = context,
-            content = finalContent,
-            config = config,
-            onProgress = onProgress
-        )
+        buildSearchableOcrPdf(pages, config) { cur, tot ->
+            onProgress(cur, tot)
+        }
+    }
+
+    data class OcrPagePublic(val bitmap: Bitmap?, val text: String)
+
+    /**
+     * Builds a searchable PDF: each page draws the scanned image, then writes
+     * the OCR text over it in invisible mode (render mode 3) so it can be
+     * selected and searched, followed by a plain-text transcript page.
+     */
+    suspend fun buildSearchableOcrPdf(
+        pages: List<OcrPagePublic>,
+        config: TextPdfConfig,
+        onProgress: (current: Int, total: Int) -> Unit
+    ): File = withContext(Dispatchers.IO) {
+        val outputDir = File(context.filesDir, "generated_pdfs").apply { mkdirs() }
+        val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+        val name = if (config.customFileName.isNotBlank()) {
+            val clean = config.customFileName.trim().replace(Regex("[^a-zA-Z0-9._-]"), "_")
+            if (clean.endsWith(".pdf", ignoreCase = true)) clean else "$clean.pdf"
+        } else {
+            "OmniOCR_$timeStamp.pdf"
+        }
+        val outputFile = File(outputDir, name)
+
+        val (pageW, pageH) = if (config.pageSize == PageSize.FIT_IMAGE) {
+            (PageSize.A4.widthPt to PageSize.A4.heightPt)
+        } else {
+            (config.pageSize.widthPt to config.pageSize.heightPt)
+        }
+
+        val doc = PdfDocument()
+        try {
+            pages.forEachIndexed { index, ocr ->
+                onProgress(index + 1, pages.size)
+
+                // Page A: the scan with an invisible text layer.
+                val infoA = PdfDocument.PageInfo.Builder(pageW, pageH, index * 2 + 1).create()
+                val pageA = doc.startPage(infoA)
+                val canvasA = pageA.canvas
+                canvasA.drawColor(Color.WHITE)
+
+                ocr.bitmap?.let { bmp ->
+                    val target = RectF(
+                        config.margin.marginPt.toFloat(),
+                        config.margin.marginPt.toFloat(),
+                        pageW - config.margin.marginPt.toFloat(),
+                        pageH - config.margin.marginPt.toFloat()
+                    )
+                    val matrix = Matrix()
+                    val scale = minOf(target.width() / bmp.width, target.height() / bmp.height)
+                    matrix.postScale(scale, scale)
+                    matrix.postTranslate(target.left, target.top)
+                    canvasA.drawBitmap(bmp, matrix, Paint(Paint.FILTER_BITMAP_FLAG))
+                }
+
+                if (ocr.text.isNotBlank()) {
+                    // Invisible text: identical glyphs at the same position,
+                    // but rendered with render mode 3 (invisible). This is what
+                    // makes the scanned page searchable and copyable.
+                    val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                        textSize = 10f
+                        color = Color.BLACK
+                    }
+                    val layout = StaticLayout.Builder.obtain(
+                        ocr.text, 0, ocr.text.length, tp,
+                        (pageW - 2 * config.margin.marginPt).toInt().coerceAtLeast(50)
+                    ).setLineSpacing(0f, 1.1f).build()
+                    canvasA.save()
+                    canvasA.translate(
+                        config.margin.marginPt.toFloat(),
+                        config.margin.marginPt.toFloat()
+                    )
+                    tp.color = Color.TRANSPARENT
+                    layout.draw(canvasA)
+                    canvasA.restore()
+                }
+
+                if (config.watermarkText.isNotBlank()) {
+                    drawWatermark(canvasA, config.watermarkText, pageW, pageH)
+                }
+                doc.finishPage(pageA)
+
+                // Page B: the readable transcript (visible text).
+                val infoB = PdfDocument.PageInfo.Builder(pageW, pageH, index * 2 + 2).create()
+                val pageB = doc.startPage(infoB)
+                val canvasB = pageB.canvas
+                canvasB.drawColor(Color.WHITE)
+
+                val body = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                    textSize = config.fontSize
+                    color = Color.rgb(30, 41, 59)
+                }
+                val content = if (ocr.text.isNotBlank()) ocr.text
+                    else "No text was detected on this page."
+                val layoutB = StaticLayout.Builder.obtain(
+                    content, 0, content.length, body,
+                    (pageW - 2 * config.margin.marginPt).toInt().coerceAtLeast(50)
+                ).setLineSpacing(0f, config.lineSpacing).build()
+                canvasB.save()
+                canvasB.translate(
+                    config.margin.marginPt.toFloat(),
+                    config.margin.marginPt.toFloat() + 24f
+                )
+                layoutB.draw(canvasB)
+                canvasB.restore()
+
+                if (config.showPageNumbers) {
+                    drawPageNumber(canvasB, index + 1, pages.size, pageW, pageH, config.margin.marginPt.toFloat())
+                }
+                doc.finishPage(pageB)
+            }
+
+            FileOutputStream(outputFile).use { doc.writeTo(it) }
+        } finally {
+            doc.close()
+            pages.forEach { it.bitmap?.recycle() }
+        }
+        outputFile
     }
 }

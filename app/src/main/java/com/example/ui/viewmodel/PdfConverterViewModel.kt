@@ -204,6 +204,12 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
     private val _isViewerLoading = MutableStateFlow(false)
     val isViewerLoading: StateFlow<Boolean> = _isViewerLoading.asStateFlow()
 
+    // --- Tool: Organize (page reorder / delete / rotate) ---
+    private val _pageOrder = MutableStateFlow<List<Int>>(emptyList())
+    val pageOrder: StateFlow<List<Int>> = _pageOrder.asStateFlow()
+
+    fun setPageOrder(order: List<Int>) { _pageOrder.value = order }
+
     // --- Vault / History Filtering ---
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -1040,7 +1046,8 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                         _conversionState.value = ConversionUiState.Processing(3, 10, "Removing permissions lock & restrictions...")
                         outputFile = com.example.engine.AdvancedPdfEngine.unlockPdf(
                             context = app,
-                            pdfUri = pdfUri
+                            pdfUri = pdfUri,
+                            password = password
                         ) { cur, tot ->
                             _conversionState.value = ConversionUiState.Processing(cur, tot, "Unlocking page $cur of $tot")
                         }
@@ -1124,9 +1131,11 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                     }
                     ConversionType.ORGANIZE_PDF -> {
                         if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
-                        _conversionState.value = ConversionUiState.Processing(3, 10, "Restructuring and organizing pages...")
-                        val pages = com.example.engine.PdfEngine.renderAllPagesFromPdfUri(app, pdfUri)
-                        val order = (0 until pages.size).toList()
+                        _conversionState.value = ConversionUiState.Processing(1, 1, "Organizing pages...")
+                        // Applies the reorder/delete/rotate edits the user made
+                        // in the organize editor; with no edits this is a clean
+                        // round-trip (and still validates the document parses).
+                        val order = _pageOrder.value
                         outputFile = com.example.engine.AdvancedPdfEngine.organizePdf(
                             context = app,
                             pdfUri = pdfUri,
@@ -1135,6 +1144,36 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                         ) { cur, tot ->
                             _conversionState.value = ConversionUiState.Processing(cur, tot, "Organizing page $cur of $tot")
                         }
+                    }
+                    ConversionType.OCR_PDF -> {
+                        if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
+                        _conversionState.value = ConversionUiState.Processing(1, 1, "Running OCR on document...")
+                        outputFile = com.example.engine.AdvancedPdfEngine.ocrPdf(
+                            context = app,
+                            pdfUri = pdfUri
+                        ) { cur, tot ->
+                            _conversionState.value = ConversionUiState.Processing(cur, tot, "Recognizing page $cur of $tot")
+                        }
+                    }
+                    ConversionType.EXTRACT_TEXT -> {
+                        if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
+                        _conversionState.value = ConversionUiState.Processing(1, 1, "Extracting text...")
+                        // Tries the embedded text layer first; if the PDF is a
+                        // scan with none, fall back to on-device OCR.
+                        var text = com.example.engine.PdfEngine.extractTextFromPdfUriTextLayer(app, pdfUri) ?: ""
+                        if (text.isBlank()) {
+                            val renders = com.example.engine.PdfEngine.renderAllPagesFromPdfUri(app, pdfUri)
+                            text = renders.mapIndexed { i, bmp ->
+                                _conversionState.value = ConversionUiState.Processing(i + 1, renders.size, "Scanning page ${i + 1} of ${renders.size}...")
+                                com.example.engine.AdvancedPdfEngine.extractTextFromBitmap(bmp)
+                            }.joinToString("\n\n")
+                        }
+                        if (text.isBlank()) {
+                            _conversionState.value = ConversionUiState.Error("No extractable text was found in this PDF.")
+                            return@launch
+                        }
+                        outputFile = File(app.cacheDir, "extracted_text_${System.currentTimeMillis()}.txt")
+                        outputFile.writeText(text)
                     }
                     else -> {
                         if (pdfUri != null) {
