@@ -109,6 +109,7 @@ fun DocumentScannerScreen(
     onDone: () -> Unit,
     onBack: () -> Unit,
     cameraController: CameraXController,
+    previewView: androidx.camera.view.PreviewView,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -613,7 +614,9 @@ private fun CaptureControlsRow(
                 .border(1.dp, SlateBorder, CircleShape)
                 .clickable {
                     galleryLauncher.launch(
-                        ActivityResultContracts.PickVisualMedia.ImageOnly
+                        ActivityResultContracts.PickVisualMedia.VisualMediaRequest(
+                            ActivityResultContracts.PickVisualMedia.ImageOnly
+                        )
                     )
                 }
                 .testTag("scanner_gallery_button"),

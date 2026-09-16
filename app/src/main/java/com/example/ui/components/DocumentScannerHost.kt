@@ -50,10 +50,9 @@ fun DocumentScannerHost(
     // The preview surface lives in the composable tree (AndroidView), so we
     // build the PreviewView here and hand it both to the bind and to the screen.
     val previewView = remember {
-        android.view.ViewGroup.LayoutParams.MATCH_PARENT.let { _ ->
-            androidx.camera.view.PreviewView(context).apply {
-                layoutParams = android.widget.FrameLayout.LayoutParams(it, it)
-            }
+        val size = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+        androidx.camera.view.PreviewView(context).apply {
+            layoutParams = android.widget.FrameLayout.LayoutParams(size, size)
         }
     }
 
