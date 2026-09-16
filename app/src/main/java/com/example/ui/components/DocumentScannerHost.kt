@@ -47,9 +47,19 @@ fun DocumentScannerHost(
     val cameraController = remember { CameraXController(context) }
     val captureScope = rememberCoroutineScope()
 
+    // The preview surface lives in the composable tree (AndroidView), so we
+    // build the PreviewView here and hand it both to the bind and to the screen.
+    val previewView = remember {
+        android.view.ViewGroup.LayoutParams.MATCH_PARENT.let { _ ->
+            androidx.camera.view.PreviewView(context).apply {
+                layoutParams = android.widget.FrameLayout.LayoutParams(it, it)
+            }
+        }
+    }
+
     // Flip needs a full rebind, which [DocumentScannerScreen] reacts to.
     LaunchedEffect(lensFacing) {
-        cameraController.bind(lifecycleOwner, lensFacing)
+        cameraController.bind(lifecycleOwner, previewView, lensFacing)
     }
 
     DisposableEffect(Unit) {
@@ -62,6 +72,7 @@ fun DocumentScannerHost(
         scanQuality = scanQuality,
         isProcessing = isProcessing,
         cameraController = cameraController,
+        previewView = previewView,
         onCaptureRequested = { rawUri ->
             captureScope.launch {
                 onProcessCapture(rawUri)
@@ -73,7 +84,7 @@ fun DocumentScannerHost(
         },
         onRemovePage = onRemovePage,
         onPickFromGallery = onPickFromGallery,
-        onFlipCamera = { newFacing -> onFlipCamera(newFacing) },
+        onFlipCamera = onFlipCamera,
         onFilterSelected = onFilterSelected,
         onQualitySelected = onQualitySelected,
         onDone = onDone,

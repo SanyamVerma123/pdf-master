@@ -480,8 +480,8 @@ object DocumentScanner {
             edgeCount++
             val x = i % sw
             val y = i / sw
-            val sum = x + y
-            val diff = x - y
+            val sum = (x + y).toFloat()
+            val diff = (x - y).toFloat()
             if (sum < minSum) { minSum = sum; tl = floatArrayOf(x.toFloat(), y.toFloat()) }
             if (diff > maxDiff) { maxDiff = diff; tr = floatArrayOf(x.toFloat(), y.toFloat()) }
             if (sum > maxSum) { maxSum = sum; br = floatArrayOf(x.toFloat(), y.toFloat()) }

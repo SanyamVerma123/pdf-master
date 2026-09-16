@@ -102,7 +102,8 @@ fun DocumentScannerScreen(
     onApplyFilter: (ScanPageUi, ScanFilter) -> Unit,
     onRemovePage: (ScanPageUi) -> Unit,
     onPickFromGallery: (List<Uri>) -> Unit,
-    onFlipCamera: () -> Unit,
+    // Provides the new lens-facing constant so the caller can rebind the camera.
+    onFlipCamera: (Int) -> Unit,
     onFilterSelected: (ScanFilter) -> Unit,
     onQualitySelected: (ScanQuality) -> Unit,
     onDone: () -> Unit,
@@ -190,7 +191,14 @@ fun DocumentScannerScreen(
                 quality = scanQuality,
                 onBack = onBack,
                 onToggleFlash = { cameraController.toggleTorch() },
-                onFlip = onFlipCamera,
+                onFlip = {
+                    val next = if (cameraState.lensFacing == CameraSelector.LENS_FACING_BACK) {
+                        CameraSelector.LENS_FACING_FRONT
+                    } else {
+                        CameraSelector.LENS_FACING_BACK
+                    }
+                    onFlipCamera(next)
+                },
                 onQualitySelected = onQualitySelected,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -605,9 +613,7 @@ private fun CaptureControlsRow(
                 .border(1.dp, SlateBorder, CircleShape)
                 .clickable {
                     galleryLauncher.launch(
-                        ActivityResultContracts.PickVisualMediaRequest(
-                            ActivityResultContracts.PickVisualMedia.ImageOnly
-                        )
+                        ActivityResultContracts.PickVisualMedia.ImageOnly
                     )
                 }
                 .testTag("scanner_gallery_button"),
