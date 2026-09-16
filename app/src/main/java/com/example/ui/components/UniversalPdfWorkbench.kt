@@ -126,6 +126,16 @@ fun UniversalPdfWorkbench(
     var pageBitmaps by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
     var isLoadingPages by remember { mutableStateOf(false) }
 
+    // Page editor: opens when the user taps a page-preview thumbnail. A null
+    // index means the sheet is closed.
+    var editingPageIndex by remember { mutableStateOf<Int?>(null) }
+
+    // Per-page annotation strokes collected from PageEditSheet, keyed by page.
+    // Normalized (0f..1f) so they survive the page's Fit letterboxing and zoom.
+    val pageAnnotations = remember {
+        mutableStateMapOf<Int, List<androidx.compose.ui.geometry.Offset>>()
+    }
+
     // Common Text inputs
     var customTextInput by remember { mutableStateOf("") }
     var secondaryTextInput by remember { mutableStateOf("") }
@@ -519,13 +529,41 @@ fun UniversalPdfWorkbench(
                                             color = if (signPageIdx == idx) toolItem.accentColor else MaterialTheme.colorScheme.outline,
                                             shape = RoundedCornerShape(8.dp)
                                         )
-                                        .clickable { signPageIdx = idx }
+                                        // Tapping a preview must open the page at
+                                        // full size. The viewer renders the whole
+                                        // document and scrolls to this page.
+                                        .clickable {
+                                            fullScreenPageIndex = idx
+                                        }
+                                        .testTag("preview_page_thumb_$idx")
                                 ) {
-                                    AsyncImage(
-                                        model = bmp,
+                                    // A Bitmap model handed to AsyncImage is not
+                                    // reliably decoded; draw it directly instead.
+                                    Image(
+                                        bitmap = bmp.asImageBitmap(),
                                         contentDescription = "Page ${idx + 1}",
+                                        contentScale = ContentScale.Crop,
                                         modifier = Modifier.fillMaxSize()
                                     )
+                                    // Un-committed annotations drawn live so the
+                                    // user sees what a tap will save.
+                                    val pending = pageAnnotations[idx]
+                                    if (pending != null && pending.isNotEmpty()) {
+                                        Canvas(modifier = Modifier.fillMaxSize()) {
+                                            for (i in 0 until pending.size - 1) {
+                                                val p1 = pending[i]
+                                                val p2 = pending[i + 1]
+                                                if (p1.x != p2.x || p1.y != p2.y) {
+                                                    drawLine(
+                                                        color = CrimsonPrimary,
+                                                        start = Offset(p1.x * size.width, p1.y * size.height),
+                                                        end = Offset(p2.x * size.width, p2.y * size.height),
+                                                        strokeWidth = 4f
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
                                     Box(
                                         modifier = Modifier
                                             .align(Alignment.BottomCenter)
@@ -844,20 +882,44 @@ fun UniversalPdfWorkbench(
                             // PROTECT / UNLOCK CONTROLS
                             // ------------------------------------------
                             ConversionType.PROTECT_PDF, ConversionType.UNLOCK_PDF -> {
+                                val isUnlock = tool == ConversionType.UNLOCK_PDF
                                 OutlinedTextField(
                                     value = passwordInput,
                                     onValueChange = { passwordInput = it },
-                                    label = { Text("Set Password") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true
+                                    label = {
+                                        Text(if (isUnlock) "Document Password" else "Set Password")
+                                    },
+                                    placeholder = {
+                                        Text(
+                                            if (isUnlock) "Enter the password of this PDF"
+                                            else "Choose a password for the new PDF"
+                                        )
+                                    },
+                                    singleLine = true,
+                                    isError = isUnlock && selectedPdfUri != null && passwordInput.isEmpty(),
+                                    supportingText = {
+                                        if (isUnlock) {
+                                            Text(
+                                                "The unlocked copy keeps no password and no restrictions; " +
+                                                    "the original file is never modified."
+                                            )
+                                        } else {
+                                            Text("Used to open the PDF later. Printing is ${
+                                                if (allowPrinting) "allowed" else "blocked"
+                                            }.")
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
                                 )
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text("Allow High-Res Printing", style = MaterialTheme.typography.bodySmall)
-                                    Switch(checked = allowPrinting, onCheckedChange = { allowPrinting = it })
+                                if (!isUnlock) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("Allow High-Res Printing", style = MaterialTheme.typography.bodySmall)
+                                        Switch(checked = allowPrinting, onCheckedChange = { allowPrinting = it })
+                                    }
                                 }
                             }
 
@@ -1007,11 +1069,27 @@ fun UniversalPdfWorkbench(
             // 4. PRIMARY ACTION BUTTON
             // ==========================================
             item {
+                // Unlock needs its password up front: an encrypted PDF cannot
+                // be decrypted without it, so block the tap with a clear error
+                // instead of letting the crypto layer throw deep in the engine.
+                val missingUnlockPassword = tool == ConversionType.UNLOCK_PDF &&
+                    selectedPdfUri != null &&
+                    passwordInput.isEmpty()
+
                 Button(
                     onClick = {
                         val uri = selectedPdfUri
                         if (uri == null && tool != ConversionType.HTML_TO_PDF && tool != ConversionType.SCAN_TO_PDF) {
                             pdfPickerLauncher.launch(arrayOf("application/pdf"))
+                            return@Button
+                        }
+
+                        if (missingUnlockPassword) {
+                            scope.launch {
+                                viewModel.setConversionError(
+                                    "This PDF is password protected. Enter its password to unlock it."
+                                )
+                            }
                             return@Button
                         }
 
@@ -1077,6 +1155,50 @@ fun UniversalPdfWorkbench(
                     }
                 }
             }
+
+            item {
+                Spacer(modifier = Modifier.height(24.dp))
+            }
+        }
+    }
+
+    // Page editor sheet: rotate / zoom / annotate on a staged page.
+    editingPageIndex?.let { pageIndex ->
+        if (pageBitmaps.isNotEmpty()) {
+            PageEditSheet(
+                pages = pageBitmaps,
+                initialPage = pageIndex.coerceIn(0, pageBitmaps.lastIndex),
+                onDismiss = { editingPageIndex = null },
+                onRotatePage = { index ->
+                    // Rotate the staged bitmap in place so the edit shows up in
+                    // the preview grid below and in the tool's output.
+                    pageBitmaps = pageBitmaps.toMutableList().apply {
+                        val bmp = getOrNull(index) ?: return@PageEditSheet
+                        val matrix = android.graphics.Matrix().apply { postRotate(90f) }
+                        set(index, Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true))
+                    }
+                },
+                onRemovePage = { index ->
+                    // Removing a staged page invalidates the indices used by the
+                    // annotation map, so shift every entry above it down.
+                    pageBitmaps = pageBitmaps.toMutableList().apply { removeAt(index) }
+                    val shifted = pageAnnotations.toMap()
+                    pageAnnotations.clear()
+                    shifted.forEach { (key, strokes) ->
+                        when {
+                            key == index -> Unit
+                            key > index -> pageAnnotations[key - 1] = strokes
+                            else -> pageAnnotations[key] = strokes
+                        }
+                    }
+                    if (pageBitmaps.isNotEmpty()) {
+                        signPageIdx = signPageIdx.coerceAtMost(pageBitmaps.lastIndex)
+                    }
+                },
+                onAnnotatePage = { index, strokes ->
+                    pageAnnotations[index] = strokes
+                }
+            )
         }
     }
 }

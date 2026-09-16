@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
@@ -50,12 +52,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.ConversionType
 import com.example.data.model.ToolCatalog
 import com.example.data.model.ToolCategory
 import com.example.data.model.ToolItem
+import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CrimsonPrimary
 
 @Composable
@@ -204,6 +208,17 @@ fun ToolSelectionDashboard(
         }
 
         // ==========================================
+        // QUICK ACCESS: pinned "Popular" tools, always one tap away above the
+        // full category grid. Hidden only when a search narrows the list.
+        // ==========================================
+        if (searchQuery.isBlank() && selectedCategory == ToolCategory.ALL) {
+            PopularToolsRow(
+                onSelectTool = onSelectTool,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        // ==========================================
         // SQUARE BOX TOOLS GRID (2 COLUMNS PER ROW)
         // Matching the exact square card layout
         // ==========================================
@@ -307,6 +322,132 @@ fun ToolSelectionDashboard(
                     modifier = Modifier.size(16.dp)
                 )
             }
+        }
+    }
+}
+
+/**
+ * Horizontally scrollable quick-access strip of the tools users open most.
+ *
+ * Pinned above the full category grid so they stay reachable no matter how far
+ * the grid scrolls. The set is ordered by usage, not by category.
+ */
+@Composable
+private fun PopularToolsRow(
+    onSelectTool: (ConversionType) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val pinned = remember {
+        listOf(
+            ConversionType.IMAGE_TO_PDF,
+            ConversionType.EDIT_PDF,
+            ConversionType.PDF_TO_IMAGES,
+            ConversionType.OCR_PDF,
+            ConversionType.SCAN_TO_PDF,
+            ConversionType.SPLIT_PDF
+        ).mapNotNull { type -> ToolCatalog.tools.find { it.type == type } }
+    }
+    if (pinned.isEmpty()) return
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Star,
+                contentDescription = null,
+                tint = AmberWarning,
+                modifier = Modifier.size(13.dp)
+            )
+            Text(
+                text = "POPULAR • QUICK ACCESS",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    letterSpacing = 1.2.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = AmberWarning
+                )
+            )
+        }
+
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(horizontal = 1.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            items(pinned) { tool ->
+                PopularToolChip(
+                    title = tool.title,
+                    subtitle = tool.subtitle,
+                    accentColor = tool.accentColor,
+                    icon = tool.icon,
+                    testTag = "popular_${tool.testTag}",
+                    onClick = { onSelectTool(tool.type) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PopularToolChip(
+    title: String,
+    subtitle: String,
+    accentColor: Color,
+    icon: ImageVector,
+    testTag: String,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .width(132.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, accentColor.copy(alpha = 0.45f), RoundedCornerShape(16.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp, vertical = 12.dp)
+            .testTag(testTag)
+    ) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(accentColor.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = title,
+                    tint = accentColor,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 8.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

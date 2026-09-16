@@ -240,6 +240,32 @@ object DocumentScanner {
         rawDir(context).deleteRecursively()
     }
 
+    /**
+     * Rotates a staged scan page 90 degrees clockwise and returns a new
+     * [ScanPage] pointing at the rotated output. The raw source frame is kept
+     * so filters can still be re-applied non-destructively afterwards.
+     */
+    suspend fun rotatePage(context: Context, page: ScanPage): ScanPage = withContext(Dispatchers.IO) {
+        val source = decodeBitmap(context, page.processedUri, maxDim = ScanQuality.HIGH.maxDim)
+            ?: throw IllegalStateException("Could not read the scanned page.")
+        try {
+            val matrix = android.graphics.Matrix().apply { postRotate(90f) }
+            val rotated = Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+            try {
+                val (outUri, _) = saveBitmap(context, rotated, prefix = "scan_rot")
+                page.copy(
+                    processedUri = outUri,
+                    width = rotated.width,
+                    height = rotated.height
+                )
+            } finally {
+                if (rotated !== source) rotated.recycleSafe()
+            }
+        } finally {
+            source.recycleSafe()
+        }
+    }
+
     // ------------------------------------------------------------------
     // Colour filters
     // ------------------------------------------------------------------

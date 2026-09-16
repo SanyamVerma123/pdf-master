@@ -871,7 +871,9 @@ object PdfEngine {
                 recognizer.process(image)
                     .addOnSuccessListener { visionText ->
                         if (continuation.isActive) {
-                            continuation.resume(visionText.text)
+                            // ML Kit's block order is the detection order, not
+                            // the reading order; rebuild it from line boxes.
+                            continuation.resume(AdvancedPdfEngine.extractTextWithReadingOrder(visionText))
                         }
                     }
                     .addOnFailureListener { e ->

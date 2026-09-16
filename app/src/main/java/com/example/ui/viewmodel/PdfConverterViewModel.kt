@@ -303,6 +303,53 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
         _scannerError.value = null
     }
 
+    /**
+     * Starts a fresh scan session: any pages staged from a previous visit are
+     * discarded so the tool never shows stale captures. Called every time the
+     * user taps Scan from the workbench.
+     */
+    fun startFreshScanSession() {
+        clearScanPages()
+    }
+
+    /**
+     * Rotates a staged scan page 90 degrees clockwise by re-encoding the
+     * processed bitmap. Updates the page in place so the thumbnail strip and
+     * the compiled PDF both reflect the new orientation.
+     */
+    fun rotateScanPage(page: ScanPage) {
+        viewModelScope.launch {
+            _isScanProcessing.value = true
+            try {
+                val rotated = DocumentScanner.rotatePage(getApplication(), page)
+                _scanPages.update { current ->
+                    current.map { existing ->
+                        if (existing.id == page.id) rotated else existing
+                    }
+                }
+            } catch (e: Exception) {
+                _scannerError.value = e.localizedMessage ?: "Failed to rotate the page."
+            } finally {
+                _isScanProcessing.value = false
+            }
+        }
+    }
+
+    /**
+     * Reorders a staged scan page by [from] -> [to], used by the drag handles
+     * in the thumbnail strip.
+     */
+    fun moveScanPage(from: Int, to: Int) {
+        _scanPages.update { current ->
+            if (from in current.indices && to in current.indices) {
+                val list = current.toMutableList()
+                val item = list.removeAt(from)
+                list.add(to, item)
+                list
+            } else current
+        }
+    }
+
     fun dismissScannerError() {
         _scannerError.value = null
     }
@@ -1118,6 +1165,14 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
 
     fun dismissConversionState() {
         _conversionState.value = ConversionUiState.Idle
+    }
+
+    /**
+     * Lets a composable report a validation error through the same status card
+     * the engine uses, so input problems surface where the user is looking.
+     */
+    fun setConversionError(message: String) {
+        _conversionState.value = ConversionUiState.Error(message)
     }
 
     // History Actions

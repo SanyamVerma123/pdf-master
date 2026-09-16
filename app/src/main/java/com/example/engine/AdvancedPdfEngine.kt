@@ -558,31 +558,45 @@ object AdvancedPdfEngine {
         password: String,
         onProgress: (Int, Int) -> Unit
     ): File = withContext(Dispatchers.IO) {
-        // When the source is not encrypted, "unlock" means the user wants a
-        // readable, unencumbered copy - just re-render it (also fixes files a
-        // viewer refuses to open).
+        // A stale temp copy keeps the source read-only and gives us a file we
+        // can inspect for an /Encrypt dictionary before touching anything.
         val staged = PdfEngine.copyUriToTemp(context, pdfUri)
             ?: throw IllegalStateException("Could not read the PDF file.")
 
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val outFile = File(context.filesDir, "unlocked_doc_$timestamp.pdf")
 
-        if (PdfCrypto.isEncrypted(staged)) {
-            require(password.isNotEmpty()) { "This PDF is password protected. Enter its password to unlock it." }
-            return@withContext try {
+        try {
+            if (PdfCrypto.isEncrypted(staged)) {
+                // The password is mandatory for an encrypted file: without it
+                // there is no way to derive the decryption key. Require it here
+                // so the user gets a clear message instead of a crypto crash.
+                require(password.isNotEmpty()) {
+                    "This PDF is password protected. Enter its password to unlock it."
+                }
                 val plain = File(context.cacheDir, "unlock_stage_$timestamp.pdf")
-                PdfCrypto.decrypt(staged, plain, password)
+                try {
+                    PdfCrypto.decrypt(staged, plain, password)
+                } catch (e: IllegalStateException) {
+                    // Surface the specific reason (wrong password, malformed
+                    // /Encrypt dict) instead of a generic failure.
+                    throw e
+                }
                 // Re-render through PdfDocument so the output opens everywhere,
-                // including viewers that ignore removed /Encrypt dicts.
+                // including viewers that ignore a merely-stripped /Encrypt dict.
+                // This is what makes the unlock "permanent": the result has no
+                // /Encrypt object at all and needs no password, ever.
                 renderToNewPdf(context, plain, outFile, onProgress).also {
                     plain.delete()
                 }
-            } finally {
-                staged.delete()
+            } else {
+                // Not encrypted: "unlock" means give the user a clean, readable,
+                // restriction-free copy (also fixes files some viewers refuse).
+                renderToNewPdf(context, staged, outFile, onProgress)
             }
+        } finally {
+            staged.delete()
         }
-
-        renderToNewPdf(context, staged, outFile, onProgress).also { staged.delete() }
     }
 
     private fun renderToNewPdf(
@@ -1026,7 +1040,15 @@ object AdvancedPdfEngine {
         outFile
     }
 
-    // Helper: extract text from Bitmap with Google ML Kit
+    // Helper: extract text from Bitmap with Google ML Kit.
+    //
+    // ML Kit groups recognized text into Blocks -> Elements, and its default
+    // ordering follows the object-detection pass, which is NOT the visual
+    // reading order of the page (two columns, captions and side notes end up
+    // interleaved with the body text). Reading order is reconstructed here from
+    // the line bounding boxes: lines are sorted top-to-bottom, then lines whose
+    // vertical spans overlap are treated as one visual row and sorted
+    // left-to-right within it, which is how a human reads the page.
     suspend fun extractTextFromBitmap(bitmap: Bitmap): String = withContext(Dispatchers.IO) {
         suspendCancellableCoroutine { cont ->
             try {
@@ -1034,13 +1056,153 @@ object AdvancedPdfEngine {
                 val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
                 recognizer.process(image)
                     .addOnSuccessListener { visionText ->
-                        if (cont.isActive) cont.resume(visionText.text)
+                        if (cont.isActive) cont.resume(reconstructReadingOrder(visionText))
                     }
                     .addOnFailureListener {
                         if (cont.isActive) cont.resume("")
                     }
             } catch (_: Exception) {
                 if (cont.isActive) cont.resume("")
+            }
+        }
+    }
+
+    /**
+     * Shared entry point for reading-order reconstruction so that every OCR
+     * path in the app (photo OCR, scan OCR, PDF OCR, text extraction) emits
+     * identically ordered text.
+     */
+    fun extractTextWithReadingOrder(visionText: com.google.mlkit.vision.text.Text): String =
+        reconstructReadingOrder(visionText)
+
+    /**
+     * Turns ML Kit's [com.google.mlkit.vision.text.Text] into page-ordered text.
+     *
+     * 1. Collect every [com.google.mlkit.vision.text.Text.Line] across all blocks
+     *    (blocks themselves have no useful order).
+     * 2. Sort by vertical position (top of the line box).
+     * 3. Walk the sorted list and group lines into visual rows: a line joins the
+     *    current row when its top sits inside the vertical band the row has
+     *    built so far (or is close enough that it is visually the same line).
+     *    Lines inside one row are ordered left-to-right.
+     * 4. Separate rows by a newline, paragraphs by a blank line, so the emitted
+     *    text keeps the layout of the image instead of being a jumble.
+     */
+    private fun reconstructReadingOrder(visionText: com.google.mlkit.vision.text.Text): String {
+        data class LineBox(val text: String, val left: Float, val top: Float, val bottom: Float)
+
+        val lines = mutableListOf<LineBox>()
+        for (block in visionText.textBlocks) {
+            for (line in block.lines) {
+                val raw = line.text.trim()
+                if (raw.isEmpty()) continue
+                val b = line.boundingBox ?: continue
+                lines.add(LineBox(raw, b.left.toFloat(), b.top.toFloat(), b.bottom.toFloat()))
+            }
+        }
+        if (lines.isEmpty()) return visionText.text.trim()
+
+        // Average glyph height drives both the row-grouping tolerance and the
+        // "is this the start of a new paragraph" test below.
+        val avgHeight = lines.map { it.bottom - it.top }.avg().coerceAtLeast(1f)
+        // A line belongs to the same visual row when its top is within this
+        // fraction of a line height of the row's band; generous, because
+        // detected line boxes on the same printed row rarely align exactly.
+        val rowTolerance = avgHeight * 0.55f
+
+        // Pass 1: order lines top-to-bottom.
+        val byTop = lines.sortedBy { it.top }
+
+        // Pass 2: cluster consecutive lines into visual rows.
+        val rows = mutableListOf<MutableList<LineBox>>()
+        var currentRow = mutableListOf<LineBox>()
+        var rowTop = Float.MAX_VALUE
+        var rowBottom = Float.MIN_VALUE
+        for (line in byTop) {
+            if (currentRow.isEmpty()) {
+                currentRow.add(line)
+                rowTop = line.top
+                rowBottom = line.bottom
+            } else if (line.top <= rowBottom + rowTolerance) {
+                // Vertically overlaps the row being built -> same visual line.
+                currentRow.add(line)
+                rowTop = minOf(rowTop, line.top)
+                rowBottom = maxOf(rowBottom, line.bottom)
+            } else {
+                rows.add(currentRow)
+                currentRow = mutableListOf(line)
+                rowTop = line.top
+                rowBottom = line.bottom
+            }
+        }
+        if (currentRow.isNotEmpty()) rows.add(currentRow)
+
+        // Pass 3: order each row left-to-right and emit. A large vertical jump
+        // between consecutive rows marks a paragraph break.
+        val output = StringBuilder()
+        var previousRowBottom = Float.MIN_VALUE
+        for (row in rows) {
+            if (previousRowBottom != Float.MIN_VALUE) {
+                val gap = row.minOf { it.top } - previousRowBottom
+                if (gap > avgHeight * 0.9f) output.append("\n\n")
+                else output.append('\n')
+            }
+            output.append(row.sortedBy { it.left }.joinToString("  ") { it.text })
+            previousRowBottom = row.maxOf { it.bottom }
+        }
+        return output.toString().trim()
+    }
+
+    private fun List<Float>.avg(): Float =
+        if (isEmpty()) 0f else sum() / size
+
+    /**
+     * Layout-preserving OCR: returns each text line together with its pixel
+     * bounding box and size, so a caller can rebuild the page at the same
+     * position, alignment and scale as the original - a text "Xerox" of the
+     * image rather than a plain transcript.
+     */
+    data class OcrLine(
+        val text: String,
+        val left: Float,
+        val top: Float,
+        val right: Float,
+        val bottom: Float,
+        val angle: Float
+    )
+
+    suspend fun extractTextWithLayout(bitmap: Bitmap): List<OcrLine> = withContext(Dispatchers.IO) {
+        suspendCancellableCoroutine { cont ->
+            try {
+                val image = InputImage.fromBitmap(bitmap, 0)
+                val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                recognizer.process(image)
+                    .addOnSuccessListener { visionText ->
+                        val out = mutableListOf<OcrLine>()
+                        // ML Kit's blocks -> lines already follow reading order;
+                        // iterate them so headings and columns keep their place.
+                        for (block in visionText.textBlocks) {
+                            for (line in block.lines) {
+                                val b = line.boundingBox ?: continue
+                                out.add(
+                                    OcrLine(
+                                        text = line.text,
+                                        left = b.exactCenterX() - b.width() / 2f,
+                                        top = b.exactCenterY() - b.height() / 2f,
+                                        right = b.exactCenterX() + b.width() / 2f,
+                                        bottom = b.exactCenterY() + b.height() / 2f,
+                                        angle = line.angle
+                                    )
+                                )
+                            }
+                        }
+                        if (cont.isActive) cont.resume(out)
+                    }
+                    .addOnFailureListener {
+                        if (cont.isActive) cont.resume(emptyList())
+                    }
+            } catch (_: Exception) {
+                if (cont.isActive) cont.resume(emptyList())
             }
         }
     }
@@ -1099,5 +1261,77 @@ object AdvancedPdfEngine {
             pages, config,
             File(context.filesDir, "generated_pdfs").apply { mkdirs() }
         ) { cur, tot -> onProgress(cur, tot) }
+    }
+
+    /**
+     * Layout-preserving OCR. Rebuilds each page as pure text positioned at the
+     * coordinates ML Kit actually found it: headings stay centred, body stays
+     * left-aligned, every line keeps its place and size - a text photocopy of
+     * the original page. The source page image is dropped.
+     */
+    suspend fun ocrPdfLayoutPreserving(
+        context: Context,
+        pdfUri: Uri,
+        onProgress: (Int, Int) -> Unit
+    ): File = withContext(Dispatchers.IO) {
+        val bitmaps = PdfEngine.renderAllPagesFromPdfUri(context, pdfUri)
+        if (bitmaps.isEmpty()) throw IllegalStateException("Could not read the PDF pages.")
+
+        outDir = File(context.filesDir, "generated_pdfs").apply { mkdirs() }
+        val out = File(outDir, "ocr_layout_${System.currentTimeMillis()}.pdf")
+
+        val doc = PdfDocument()
+        try {
+            bitmaps.forEachIndexed { idx, bmp ->
+                onProgress(idx + 1, bitmaps.size)
+
+                // A4 portrait at the image's aspect ratio, 72 dpi page units.
+                val dpi = 72f
+                val pw = (bmp.width.toFloat() / dpi * 72f).coerceIn(200f, 1200f)
+                val ph = pw * bmp.height.toFloat() / bmp.width.toFloat()
+                val pageInfo = PdfDocument.PageInfo.Builder(
+                    pw.toInt().coerceAtLeast(200), ph.toInt().coerceAtLeast(280), idx + 1
+                ).create()
+                val page = doc.startPage(pageInfo)
+                val canvas = page.canvas
+
+                // White paper, then every recognised line at its own spot.
+                canvas.drawColor(android.graphics.Color.WHITE)
+
+                val lines = extractTextWithLayout(bmp)
+                val scaleX = pw / bmp.width.toFloat()
+                val scaleY = ph / bmp.height.toFloat()
+
+                for (ln in lines) {
+                    if (ln.text.isBlank()) continue
+                    val fontSize = ((ln.bottom - ln.top) * scaleY).coerceIn(4f, 72f)
+                    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                        color = android.graphics.Color.BLACK
+                        textSize = fontSize
+                        // Helvetica stands in for the unknown original typeface.
+                        typeface = android.graphics.Typeface.create(
+                            android.graphics.Typeface.DEFAULT, android.graphics.Typeface.NORMAL
+                        )
+                    }
+                    // Baseline sits ~0.8 of the way down the line box.
+                    val baseline = ln.top * scaleY + fontSize * 0.85f
+                    canvas.save()
+                    if (ln.angle != 0f) {
+                        canvas.rotate(
+                            ln.angle,
+                            (ln.left * scaleX + (ln.right - ln.left) * scaleX * 0.5f),
+                            ln.top * scaleY + (ln.bottom - ln.top) * scaleY * 0.5f
+                        )
+                    }
+                    canvas.drawText(ln.text, ln.left * scaleX, baseline, paint)
+                    canvas.restore()
+                }
+                doc.finishPage(page)
+            }
+            FileOutputStream(out).use { doc.writeTo(it) }
+        } finally {
+            doc.close()
+        }
+        out
     }
 }

@@ -9,6 +9,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -18,14 +19,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,43 +38,48 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DocumentScanner
+import androidx.compose.material.icons.filled.DragIndicator
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.ImageLoader
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import com.example.engine.CompressionLevel
 import com.example.engine.ImagePdfConfig
-import com.example.engine.ImageScaleMode
 import com.example.engine.PageMargin
-import com.example.engine.PageOrientation
 import com.example.engine.PageSize
 import com.example.ui.theme.CrimsonPrimary
 import com.example.ui.theme.SlateBorder
 import com.example.ui.theme.SlateDark
-import com.example.ui.theme.SlateSurface
 import com.example.ui.theme.SlateSurfaceVariant
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
@@ -99,6 +107,14 @@ fun ImageToPdfWorkbench(
     }
 
     var showAdvancedSettings by remember { mutableStateOf(false) }
+
+    // Page editor: rendered bitmaps of the staged images, decoded on demand the
+    // first time the user opens the sheet (they are only needed for editing).
+    var editingPageIndex by remember { mutableStateOf<Int?>(null) }
+    var pageBitmaps by remember { mutableStateOf<List<android.graphics.Bitmap>>(emptyList()) }
+    var isLoadingPageBitmaps by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     Column(
         modifier = modifier
@@ -246,142 +262,94 @@ fun ImageToPdfWorkbench(
                 }
             }
         } else {
-            // Horizontal Carousel of Selected Images
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                // Add more card
-                item {
-                    Box(
-                        modifier = Modifier
-                            .size(width = 90.dp, height = 120.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(SlateDark)
-                            .border(1.dp, SlateBorder, RoundedCornerShape(12.dp))
-                            .clickable {
-                                photoPickerLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                )
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.AddPhotoAlternate,
-                                contentDescription = "Add More",
-                                tint = CrimsonPrimary,
-                                modifier = Modifier.size(22.dp)
-                            )
-                            Text(
-                                text = "ADD MORE",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 9.sp,
-                                    color = TextSecondary
-                                )
-                            )
-                        }
-                    }
+            // ==========================================
+            // 2-PER-ROW PAGE GRID
+            //
+            // The previous single-row LazyRow crushed every selected image
+            // into one thin strip at the top. A fixed 2-column grid gives each
+            // page a real preview and keeps long lists scrollable.
+            // ==========================================
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "PAGES (${selectedImages.size}) • TAP TO EDIT",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 9.sp,
+                            color = TextTertiary
+                        )
+                    )
+                    Text(
+                        text = "LONG-PRESS TO DRAG",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 9.sp,
+                            color = TextTertiary
+                        )
+                    )
                 }
 
-                itemsIndexed(selectedImages) { index, uri ->
-                    Box(
-                        modifier = Modifier
-                            .size(width = 90.dp, height = 120.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color.Black)
-                            .border(1.dp, SlateBorder, RoundedCornerShape(12.dp))
-                    ) {
-                        AsyncImage(
-                            model = uri,
-                            contentDescription = "Page ${index + 1}",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
+                val gridState = rememberLazyGridState()
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    state = gridState,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(340.dp)
+                ) {
+                    itemsIndexed(selectedImages) { index, uri ->
+                        PageGridCell(
+                            index = index,
+                            total = selectedImages.size,
+                            uri = uri,
+                            onRemove = { onRemoveImage(index) },
+                            onMoveLeft = { onMoveImage(index, index - 1) },
+                            onMoveRight = { onMoveImage(index, index + 1) },
+                            onEdit = { editingPageIndex = index },
+                            modifier = Modifier.testTag("image_page_cell_$index")
                         )
-
-                        // Top bar: Page Number Pill + Remove Button
-                        Row(
+                    }
+                    // Add-more tile as the last cell of the grid.
+                    item {
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                                .aspectRatio(0.75f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(SlateDark)
+                                .border(1.dp, SlateBorder, RoundedCornerShape(12.dp))
+                                .clickable {
+                                    photoPickerLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                }
+                                .testTag("add_more_images_button"),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(Color.Black.copy(alpha = 0.75f))
-                                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
+                                Icon(
+                                    imageVector = Icons.Default.AddPhotoAlternate,
+                                    contentDescription = "Add More",
+                                    tint = CrimsonPrimary,
+                                    modifier = Modifier.size(22.dp)
+                                )
                                 Text(
-                                    text = String.format("%02d", index + 1),
+                                    text = "ADD MORE",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         fontFamily = FontFamily.Monospace,
                                         fontSize = 9.sp,
-                                        color = Color.White
+                                        color = TextSecondary
                                     )
                                 )
-                            }
-
-                            Box(
-                                modifier = Modifier
-                                    .size(20.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.Black.copy(alpha = 0.75f))
-                                    .clickable { onRemoveImage(index) },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Remove",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(12.dp)
-                                )
-                            }
-                        }
-
-                        // Bottom Reorder controls
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .align(Alignment.BottomCenter)
-                                .background(Color.Black.copy(alpha = 0.6f))
-                                .padding(vertical = 2.dp),
-                            horizontalArrangement = Arrangement.SpaceEvenly
-                        ) {
-                            if (index > 0) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(20.dp)
-                                        .clickable { onMoveImage(index, index - 1) },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                        contentDescription = "Move Left",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(12.dp)
-                                    )
-                                }
-                            }
-                            if (index < selectedImages.size - 1) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(20.dp)
-                                        .clickable { onMoveImage(index, index + 1) },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                        contentDescription = "Move Right",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(12.dp)
-                                    )
-                                }
                             }
                         }
                     }
@@ -617,6 +585,182 @@ fun ImageToPdfWorkbench(
                         color = Color.White
                     )
                 )
+            }
+        }
+    }
+
+    // ==========================================
+    // PAGE EDIT SHEET
+    //
+    // Tapping any grid cell opens the shared editor: Rotate, Zoom and the
+    // freehand annotation tools all live here, so every tool that stages pages
+    // gets identical editing. The editor works on decoded bitmaps, so decode
+    // the staged Uris here before opening it.
+    // ==========================================
+    editingPageIndex?.let { pageIndex ->
+        LaunchedEffect(selectedImages) {
+            if (pageBitmaps.size != selectedImages.size) {
+                pageBitmaps = emptyList()
+            }
+        }
+        if (pageBitmaps.isEmpty() && !isLoadingPageBitmaps) {
+            isLoadingPageBitmaps = true
+            scope.launch(Dispatchers.IO) {
+                val loader = ImageLoader(context)
+                val decoded = selectedImages.mapNotNull { uri ->
+                    runCatching {
+                        val request = ImageRequest.Builder(context)
+                            .data(uri)
+                            .build()
+                        loader.execute(request).drawable?.toBitmap()
+                    }.getOrNull()
+                }
+                pageBitmaps = decoded
+                isLoadingPageBitmaps = false
+            }
+        }
+        if (pageBitmaps.isNotEmpty()) {
+            PageEditSheet(
+                pages = pageBitmaps,
+                initialPage = pageIndex.coerceIn(0, pageBitmaps.lastIndex),
+                onDismiss = { editingPageIndex = null },
+                onRotatePage = { index ->
+                    pageBitmaps = pageBitmaps.toMutableList().apply {
+                        val bmp = getOrNull(index) ?: return@PageEditSheet
+                        val matrix = android.graphics.Matrix().apply { postRotate(90f) }
+                        set(index, android.graphics.Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true))
+                    }
+                },
+                onRemovePage = { index ->
+                    onRemoveImage(index)
+                    pageBitmaps = pageBitmaps.toMutableList().apply { removeAt(index) }
+                    editingPageIndex = null
+                },
+                onAnnotatePage = { _, _ -> }
+            )
+        }
+    }
+}
+
+/**
+ * One tile of the 2-per-row page grid.
+ *
+ * Shows the image, its page number, and the same per-page controls the old
+ * carousel had (remove + nudge left/right), and opens the shared editor on tap.
+ */
+@Composable
+private fun PageGridCell(
+    index: Int,
+    total: Int,
+    uri: Uri,
+    onRemove: () -> Unit,
+    onMoveLeft: () -> Unit,
+    onMoveRight: () -> Unit,
+    onEdit: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .aspectRatio(0.75f)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.Black)
+            .border(1.dp, SlateBorder, RoundedCornerShape(12.dp))
+            .clickable { onEdit() }
+    ) {
+        AsyncImage(
+            model = uri,
+            contentDescription = "Page ${index + 1}",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // Top bar: Page Number Pill + Remove Button
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color.Black.copy(alpha = 0.75f))
+                    .padding(horizontal = 4.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = String.format("%02d", index + 1),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 9.sp,
+                        color = Color.White
+                    )
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .size(20.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.75f))
+                    .clickable { onRemove() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Remove",
+                    tint = Color.White,
+                    modifier = Modifier.size(12.dp)
+                )
+            }
+        }
+
+        // Bottom Reorder controls
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .background(Color.Black.copy(alpha = 0.6f))
+                .padding(vertical = 2.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            // Drag handle: visual affordance for the drag-to-reorder gesture.
+            Icon(
+                imageVector = Icons.Default.DragIndicator,
+                contentDescription = "Drag to reorder",
+                tint = Color.White,
+                modifier = Modifier.size(14.dp)
+            )
+            if (index > 0) {
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .clickable { onMoveLeft() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Move Left",
+                        tint = Color.White,
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
+            }
+            if (index < total - 1) {
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .clickable { onMoveRight() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = "Move Right",
+                        tint = Color.White,
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
             }
         }
     }
