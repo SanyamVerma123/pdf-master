@@ -299,7 +299,7 @@ fun PageEditSheet(
                                         }
                                     )
                                 } else {
-                                    detectTransformGestures { _, pan, zoomChange, _, _ ->
+                                    detectTransformGestures { _, pan, zoomChange, _ ->
                                         zoom = (zoom * zoomChange).coerceIn(1f, 6f)
                                         panX += pan.x
                                         panY += pan.y
