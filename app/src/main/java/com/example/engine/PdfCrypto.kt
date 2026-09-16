@@ -109,6 +109,15 @@ internal object PdfCrypto {
         return out
     }
 
+    /**
+     * Returns the "/N M R" reference that follows /Root anywhere in the file,
+     * or null when no /Root key is present.
+     */
+    private fun findRootRef(raw: ByteArray): String? {
+        val m = Regex("/Root\\s+(\\d+)\\s+(\\d+)\\s+R").find(String(raw, Charsets.ISO_8859_1))
+        return m?.value?.substringAfter("/Root")?.trim()
+    }
+
     private fun findKw(b: ByteArray, kw: String, from: Int): Int {
         val k = kw.toByteArray(Charsets.ISO_8859_1)
         outer@ for (i in from..(b.size - k.size)) {
@@ -177,15 +186,19 @@ internal object PdfCrypto {
         require(xrefPos > 0) { "Could not locate the document body." }
 
         val objs = parseObjects(raw)
-        require(objs.isNotEmpty()) { "No PDF objects found to encrypt" }
         require(objs.all { it.start < xrefPos }) { "Unexpected object layout; refusing to encrypt." }
+        require(objs.isNotEmpty()) { "No PDF objects found to encrypt" }
 
         val fileId = readOrSynthesizeFileId(raw)
         val (key, oVal, uVal) = derive(userPassword, ownerPassword, fileId)
 
-        // 1) Encrypt every object payload in place. Length is preserved.
+        // 1) Encrypt every ordinary object payload in place. Length is
+        // preserved. XRef-stream objects are skipped: readers parse them before
+        // the /Encrypt dict is known, and we emit our own classic xref table.
         val out = raw.copyOf()
+        val xrefObjNums = objs.filter { isXRefStream(raw, it) }.map { it.num }.toSet()
         for (o in objs) {
+            if (o.num in xrefObjNums) continue
             val payload = out.sliceArray(o.payloadStart until o.payloadEnd)
             System.arraycopy(encryptPayload(payload, o.num, 0, key), 0, out, o.payloadStart, payload.size)
         }
@@ -201,7 +214,13 @@ internal object PdfCrypto {
         ).format(encObjNum, PERMS, toHex(oVal), toHex(uVal + PAD.sliceArray(0 until 16)))
 
         val result = ByteArrayOutputStream(out.size + 4096)
-        result.write(out, 0, xrefPos)                     // encrypted body, offsets unchanged
+        // Cut the body at the first XRef-stream object so the emitted file holds
+        // only ordinary objects plus our own classic xref table.
+        var bodyCut = xrefPos
+        for (o in objs) {
+            if (o.num in xrefObjNums) bodyCut = minOf(bodyCut, o.start)
+        }
+        result.write(out, 0, bodyCut)             // encrypted body, offsets unchanged
         val encObjOffset = result.size()
         result.write(encryptObj.toByteArray(Charsets.ISO_8859_1))
 
@@ -226,11 +245,13 @@ internal object PdfCrypto {
                 .replace(Regex("/Size\\s+\\d+"), "/Size ${encObjNum + 1}")
                 .replaceFirst("<<", "<< /Encrypt $encObjNum 0 R")
         } else {
-            // /Root is object 1 in every PDF we generate; the file id (if any)
-            // is preserved so a reader can re-derive the encryption key.
+            // Cross-reference-stream file (e.g. android.graphics.pdf.PdfDocument):
+            // there is no classic `trailer` keyword. Find the /Root reference in
+            // the xref-stream object's dict rather than assuming object 1.
+            val rootRef = findRootRef(raw).let { it ?: "1 0 R" }
             val fid = readOrSynthesizeFileId(raw)
             val idHex = toHex(fid)
-            "trailer\n<< /Size ${encObjNum + 1} /Root 1 0 R /Encrypt $encObjNum 0 R " +
+            "trailer\n<< /Size ${encObjNum + 1} /Root $rootRef /Encrypt $encObjNum 0 R " +
                 "/ID [<$idHex> <$idHex>] >>\n"
         }
         result.write(tr.toByteArray(Charsets.ISO_8859_1))
@@ -238,6 +259,15 @@ internal object PdfCrypto {
 
         dst.writeBytes(result.toByteArray())
         return dst
+    }
+
+    /**
+     * True when the object payload carries /Type /XRef, i.e. it is a
+     * cross-reference stream that must stay unencrypted.
+     */
+    private fun isXRefStream(raw: ByteArray, o: ObjInfo): Boolean {
+        val seg = String(raw, o.payloadStart, (o.payloadEnd - o.payloadStart).coerceAtLeast(0), Charsets.ISO_8859_1)
+        return seg.contains("/Type") && seg.contains("/XRef")
     }
 
     private fun encryptPayload(payload: ByteArray, num: Int, gen: Int, key: ByteArray): ByteArray {
