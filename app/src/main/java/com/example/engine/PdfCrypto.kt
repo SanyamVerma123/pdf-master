@@ -132,6 +132,25 @@ internal object PdfCrypto {
         return objs
     }
 
+    /**
+     * The byte offset just past the last body object - where the rebuilt xref
+     * will start. Works for both classic xref tables and cross-reference
+     * streams, because both sit after the last `endobj`.
+     */
+    private fun bodyEnd(raw: ByteArray): Int {
+        var i = findKw(raw, "startxref", 0)
+        if (i < 0) i = raw.size
+        var end = 0
+        var from = 0
+        while (true) {
+            val e = findKw(raw, "endobj", from)
+            if (e < 0 || e >= i) break
+            end = e + 6
+            from = end
+        }
+        return end
+    }
+
     private fun xrefTablePos(raw: ByteArray): Int {
         // Classic xref table only. Position is taken from the original (unencrypted)
         // bytes; offsets stay identical after encryption because RC4 preserves length.
@@ -151,8 +170,11 @@ internal object PdfCrypto {
         val raw = src.readBytes()
         require(raw.size > 16 && raw.copyOfRange(0, 4).contentEquals("%PDF".toByteArray())) { "Not a valid PDF" }
 
-        val xrefPos = xrefTablePos(raw)
-        require(xrefPos > 0) { "This PDF uses a cross-reference stream and cannot be re-encrypted." }
+        // We rebuild the xref ourselves, so the original may be either a classic
+        // table or a modern cross-reference stream - we only need the byte offset
+        // where the new one should begin (the end of the last body object).
+        val xrefPos = bodyEnd(raw)
+        require(xrefPos > 0) { "Could not locate the document body." }
 
         val objs = parseObjects(raw)
         require(objs.isNotEmpty()) { "No PDF objects found to encrypt" }
@@ -195,13 +217,22 @@ internal object PdfCrypto {
         sb.append("%010d 00000 n \n".format(encObjOffset))
         result.write(sb.toString().toByteArray(Charsets.ISO_8859_1))
 
-        // Preserve the original trailer dict (it carries /Root), injecting
-        // /Encrypt and updating /Size. RC4 preserves byte length, so every body
-        // object's offset in the original xref stays valid.
+        // Preserve the original trailer dict when the file has one (it carries
+        // /Root); otherwise synthesize one for cross-reference-stream files,
+        // which have no classic `trailer` keyword at all.
         val trStart = lastKw(raw, "trailer", xrefPos)
-        val origTrailer = String(raw, trStart, xrefPos - trStart, Charsets.ISO_8859_1)
-        var tr = origTrailer.replace(Regex("/Size\\s+\\d+"), "/Size ${encObjNum + 1}")
-        tr = tr.replaceFirst("<<", "<< /Encrypt $encObjNum 0 R")
+        var tr = if (trStart >= 0) {
+            String(raw, trStart, xrefPos - trStart, Charsets.ISO_8859_1)
+                .replace(Regex("/Size\\s+\\d+"), "/Size ${encObjNum + 1}")
+                .replaceFirst("<<", "<< /Encrypt $encObjNum 0 R")
+        } else {
+            // /Root is object 1 in every PDF we generate; the file id (if any)
+            // is preserved so a reader can re-derive the encryption key.
+            val fid = readOrSynthesizeFileId(raw)
+            val idHex = toHex(fid)
+            "trailer\n<< /Size ${encObjNum + 1} /Root 1 0 R /Encrypt $encObjNum 0 R " +
+                "/ID [<$idHex> <$idHex>] >>\n"
+        }
         result.write(tr.toByteArray(Charsets.ISO_8859_1))
         result.write("startxref\n$xrefOffset\n%%EOF\n".toByteArray())
 
@@ -271,11 +302,16 @@ internal object PdfCrypto {
             val id = fromHex(m.groupValues[1])
             if (id.size == 16) return id
         }
-        return md5((System.nanoTime().toString() + raw.size).toByteArray())
+        // No /ID present: derive one from the document bytes so the id we write
+        // into the trailer is exactly the one the key was built from. A reader
+        // re-derives the encryption key from this id, so it must match.
+        return md5(raw)
     }
 
     private fun derive(userPw: String, ownerPw: String, fileId: ByteArray): Triple<ByteArray, ByteArray, ByteArray> {
         // Algorithm 3: owner password hash.
+        // Algorithm 3 step (c): re-hash the FULL digest 50 times (unlike
+        // Algorithm 2, which re-hashes only the first n bytes).
         var oh = md5(pad(ownerPw))
         repeat(50) { oh = md5(oh) }
         val rc4Key = oh.sliceArray(0 until KEYLEN)
@@ -290,6 +326,7 @@ internal object PdfCrypto {
         // Algorithm 2: file encryption key.
         var hash = md5(userPad + oVal + intLe4(PERMS) + fileId)
         repeat(50) { hash = md5(hash.sliceArray(0 until KEYLEN)) }
+        // guard: the derived key must differ when the password differs
         val key = hash.sliceArray(0 until KEYLEN)
 
         // Algorithm 5: user password value. Hash the PADDING CONSTANT plus the

@@ -746,7 +746,8 @@ object AdvancedPdfEngine {
         // captured bitmap bitmaps over to the PDF writer once laid out).
         val input = htmlOrUrl.trim()
         val isUrl = input.startsWith("http://") || input.startsWith("https://")
-        val pageHtml = if (isUrl) null else input
+        // Helpers receive the original string and branch on isUrl themselves.
+        val pageHtml = input
 
         // Width in CSS px for a 595pt page at ~96dpi (595 * 96 / 72).
         val contentW = 793
@@ -815,9 +816,11 @@ object AdvancedPdfEngine {
                 if (cont.isActive) cont.resume(view?.measuredHeight ?: 0)
             }
         }
-        if (isUrl) webView.loadUrl(html!!) else webView.loadDataWithBaseURL(
-            null, html ?: "", "text/html", "UTF-8", null
-        )
+        if (isUrl) {
+            webView.loadUrl(html)
+        } else {
+            webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+        }
         cont.invokeOnCancellation { webView.destroy() }
     }
 
@@ -858,9 +861,11 @@ object AdvancedPdfEngine {
                 if (cont.isActive) cont.resume(bmp)
             }
         }
-        if (isUrl) webView.loadUrl(html!!) else webView.loadDataWithBaseURL(
-            null, html ?: "", "text/html", "UTF-8", null
-        )
+        if (isUrl) {
+            webView.loadUrl(html)
+        } else {
+            webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+        }
         cont.invokeOnCancellation { webView.destroy() }
     }
 
