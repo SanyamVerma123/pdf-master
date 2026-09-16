@@ -614,7 +614,7 @@ private fun CaptureControlsRow(
                 .border(1.dp, SlateBorder, CircleShape)
                 .clickable {
                     galleryLauncher.launch(
-                        ActivityResultContracts.PickVisualMedia.VisualMediaRequest(
+                        androidx.activity.result.VisualMediaRequest(
                             ActivityResultContracts.PickVisualMedia.ImageOnly
                         )
                     )
