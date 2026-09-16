@@ -612,7 +612,7 @@ fun ImageToPdfWorkbench(
                         val request = ImageRequest.Builder(context)
                             .data(uri)
                             .build()
-                        loader.execute(request).drawable?.let { (it as android.graphics.drawable.BitmapDrawable).bitmap }
+                        loader.execute(request).drawable?.toBitmap()
                     }.getOrNull()
                 }
                 pageBitmaps = decoded

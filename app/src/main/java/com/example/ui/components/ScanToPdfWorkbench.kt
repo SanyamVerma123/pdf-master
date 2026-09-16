@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -112,11 +113,10 @@ fun ScanToPdfWorkbench(
                             .data(page.processedUri)
                             .size(Size.ORIGINAL)
                             .build()
-                            .let { loader.execute(it).drawable?.let { d -> (d as android.graphics.drawable.BitmapDrawable).bitmap } }
+                            .let { loader.execute(it).drawable?.toBitmap() }
                     }.getOrNull()
                 }
-                @Suppress("UNCHECKED_CAST")
-                scanPageBitmaps = decoded.filterNotNull() as List<android.graphics.Bitmap>
+                scanPageBitmaps = decoded.filterNotNull()
                 isLoadingScanBitmaps = false
             }
         }
@@ -429,7 +429,7 @@ private fun ScanPageThumbnailStrip(
     onEditPage: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+    val gridState = rememberLazyGridState()
 
     Column(modifier = modifier) {
         Row(
