@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -192,18 +193,26 @@ fun PageEditSheet(
                         .fillMaxWidth()
                         .weight(1f)
                 ) {
-                    val canvasWpx = with(density) { maxWidth.toPx() }
-                    val canvasHpx = with(density) { maxHeight.toPx() }
-                    val page = pages[currentPage]
+                    // Recompute the canvas geometry whenever the box resizes and
+                    // remember it, so the apply button below (which lives
+                    // outside this scope) can normalize strokes against it.
+                    var canvasWpx by remember { mutableFloatStateOf(1f) }
+                    var canvasHpx by remember { mutableFloatStateOf(1f) }
+                    var fitScale by remember { mutableFloatStateOf(1f) }
+                    var offsetX by remember { mutableFloatStateOf(0f) }
+                    var offsetY by remember { mutableFloatStateOf(0f) }
+                    canvasWpx = with(density) { maxWidth.toPx() }
+                    canvasHpx = with(density) { maxHeight.toPx() }
 
+                    val page = pages[currentPage]
                     // ContentScale.Fit: the page is letterboxed inside the box,
                     // so compute the transform that maps the box onto the image.
-                    val fitScale = minOf(
+                    fitScale = minOf(
                         canvasWpx / page.width,
                         canvasHpx / page.height
                     ).coerceAtLeast(0.0001f)
-                    val offsetX = (canvasWpx - page.width * fitScale) / 2f
-                    val offsetY = (canvasHpx - page.height * fitScale) / 2f
+                    offsetX = (canvasWpx - page.width * fitScale) / 2f
+                    offsetY = (canvasHpx - page.height * fitScale) / 2f
 
                     // The APPLY button lives outside BoxWithConstraints, so hand
                     // it a ready-made normalizer instead of the raw values.
@@ -290,7 +299,7 @@ fun PageEditSheet(
                                         }
                                     )
                                 } else {
-                                    detectTransformGestures { _, pan, zoomChange, _ ->
+                                    detectTransformGestures { _, pan, zoomChange, _, _ ->
                                         zoom = (zoom * zoomChange).coerceIn(1f, 6f)
                                         panX += pan.x
                                         panY += pan.y
@@ -385,7 +394,7 @@ private fun strokesToNormalized(
     panY: Float
 ): List<Offset> {
     val out = mutableListOf<Offset>()
-    var last: PointF? = null
+    var last: Offset? = null
     for (p in strokes) {
         // Undo the graphicsLayer transform (scale about the box centre, then
         // translate), then undo the Fit letterbox, then normalize.
