@@ -614,7 +614,9 @@ private fun CaptureControlsRow(
                 .border(1.dp, SlateBorder, CircleShape)
                 .clickable {
                     galleryLauncher.launch(
-                        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly
+                        androidx.activity.result.PickVisualMediaRequest.Builder()
+                            .setMediaType(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            .build()
                     )
                 }
                 .testTag("scanner_gallery_button"),
