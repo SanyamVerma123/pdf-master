@@ -158,6 +158,8 @@ fun UniversalPdfWorkbench(
     // Crop specific
     var cropUniform by remember { mutableStateOf(true) }
     var cropMarginPercent by remember { mutableFloatStateOf(0.05f) }
+    var redactPages by remember { mutableStateOf("1") }
+    var redactText by remember { mutableStateOf("") }
 
     // Protect / Unlock
     var passwordInput by remember { mutableStateOf("") }
@@ -841,7 +843,7 @@ fun UniversalPdfWorkbench(
                             // ------------------------------------------
                             // PROTECT / UNLOCK CONTROLS
                             // ------------------------------------------
-                            ConversionType.PROTECT_PDF -> {
+                            ConversionType.PROTECT_PDF, ConversionType.UNLOCK_PDF -> {
                                 OutlinedTextField(
                                     value = passwordInput,
                                     onValueChange = { passwordInput = it },
@@ -949,8 +951,40 @@ fun UniversalPdfWorkbench(
                             // ------------------------------------------
                             ConversionType.REDACT_PDF -> {
                                 Text("Privacy Blackout Mode:", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                                OutlinedTextField(
+                                    value = redactText,
+                                    onValueChange = { redactText = it },
+                                    label = { Text("Text to blackout") },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                OutlinedTextField(
+                                    value = redactPages,
+                                    onValueChange = { redactPages = it },
+                                    label = { Text("Pages (e.g. 1,3,5 or 1-4, blank = all)") },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
                                 Text(
                                     "Applies permanent, un-recoverable blackout redaction masks over selected PII and confidential information.",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                )
+                            }
+
+                            ConversionType.CROP_PDF -> {
+                                Text("Crop Margins:", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Slider(
+                                        value = cropMarginPercent,
+                                        onValueChange = { cropMarginPercent = it },
+                                        valueRange = 0f..0.4f,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        "${(cropMarginPercent * 100).toInt()}%",
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                                Text(
+                                    "Removes an equal border from every page.",
                                     style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 )
                             }
@@ -1005,7 +1039,10 @@ fun UniversalPdfWorkbench(
                                 signaturePoints = signaturePoints.filterNotNull(),
                                 penColorInt = penColor.let { AndroidColor.rgb((it.red * 255).toInt(), (it.green * 255).toInt(), (it.blue * 255).toInt()) },
                                 signPageIdx = signPageIdx,
-                                addDateStamp = addDateStamp
+                                addDateStamp = addDateStamp,
+                                cropMargin = cropMarginPercent,
+                                redactText = redactText,
+                                redactPages = redactPages
                             )
                         }
                     },

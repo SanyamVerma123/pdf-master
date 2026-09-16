@@ -1156,14 +1156,21 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
         signaturePoints: List<androidx.compose.ui.geometry.Offset> = emptyList(),
         penColorInt: Int = android.graphics.Color.BLACK,
         signPageIdx: Int = 0,
-        addDateStamp: Boolean = true
+        addDateStamp: Boolean = true,
+        cropMargin: Float = 0.05f,
+        redactText: String = "",
+        redactPages: String = ""
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             val app = getApplication<Application>()
             _conversionState.value = ConversionUiState.Processing(1, 10, "Initializing ${tool.name.replace("_", " ")}...")
             try {
                 var outputFile: File? = null
-                var pageCount = 1
+                var pageCount = if (pdfUri != null) {
+                    runCatching {
+                        com.example.engine.PdfEngine.renderAllPagesFromPdfUri(app, pdfUri).size
+                    }.getOrDefault(1)
+                } else 1
 
                 when (tool) {
                     ConversionType.WATERMARK -> {
@@ -1205,7 +1212,24 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                         ) { cur, tot ->
                             _conversionState.value = ConversionUiState.Processing(cur, tot, "Processing page $cur of $tot")
                         }
-                        outputFile = files.firstOrNull() ?: throw IllegalStateException("No pages extracted")
+                        if (files.isEmpty()) throw IllegalStateException("No pages extracted")
+                        // Keep every produced file in the vault, not just the
+                        // first: a split is a many-file operation.
+                        files.drop(1).forEach { extra ->
+                            runCatching {
+                                repository.insert(
+                                    PdfRecord(
+                                        fileName = extra.name,
+                                        filePath = extra.absolutePath,
+                                        fileSizeBytes = extra.length(),
+                                        pageCount = 1,
+                                        conversionType = tool,
+                                        description = "Generated via ${tool.name.replace("_", " ")}"
+                                    )
+                                )
+                            }
+                        }
+                        outputFile = files.first()
                     }
                     ConversionType.ROTATE_PDF -> {
                         if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
@@ -1359,11 +1383,15 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                     ConversionType.REDACT_PDF -> {
                         if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
                         _conversionState.value = ConversionUiState.Processing(3, 10, "Permanently blacking out sensitive areas...")
-                        val defaultZone = listOf(android.graphics.RectF(0.1f, 0.2f, 0.9f, 0.25f))
+                        // Full-width band across the vertical middle of the page,
+                        // wide enough to cover a line of text. Only applied to the
+                        // pages the user asked for.
+                        val zone = listOf(android.graphics.RectF(0.04f, 0.42f, 0.96f, 0.58f))
                         outputFile = com.example.engine.AdvancedPdfEngine.redactPdf(
                             context = app,
                             pdfUri = pdfUri,
-                            redactionZones = defaultZone
+                            redactionZones = zone,
+                            targetPages = redactPages
                         ) { cur, tot ->
                             _conversionState.value = ConversionUiState.Processing(cur, tot, "Redacting page $cur of $tot")
                         }
@@ -1374,7 +1402,12 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                         // Applies the reorder/delete/rotate edits the user made
                         // in the organize editor; with no edits this is a clean
                         // round-trip (and still validates the document parses).
-                        val order = _pageOrder.value
+                        // An empty order means the user made no reorder/delete
+                        // edits: pass the identity so every page survives.
+                        val raw = _pageOrder.value
+                        val pageCount = com.example.engine.PdfEngine
+                            .renderAllPagesFromPdfUri(app, pdfUri).size
+                        val order = if (raw.isEmpty()) (0 until pageCount).toList() else raw
                         outputFile = com.example.engine.AdvancedPdfEngine.organizePdf(
                             context = app,
                             pdfUri = pdfUri,

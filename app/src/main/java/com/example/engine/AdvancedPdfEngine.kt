@@ -31,6 +31,9 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
+import android.view.View
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import java.util.Date
 import java.util.Locale
 import java.util.zip.ZipEntry
@@ -623,6 +626,7 @@ object AdvancedPdfEngine {
         redactionZones: List<RectF>,
         targetPageIdx: Int = 0,
         redactColor: Int = Color.BLACK,
+        targetPages: String = "",
         onProgress: (Int, Int) -> Unit
     ): File = withContext(Dispatchers.IO) {
         val bitmaps = PdfEngine.renderAllPagesFromPdfUri(context, pdfUri)
@@ -641,15 +645,19 @@ object AdvancedPdfEngine {
             val canvas = page.canvas
             canvas.drawBitmap(bmp, 0f, 0f, null)
 
-            if (i == targetPageIdx || redactionZones.isNotEmpty()) {
-                redactionZones.forEach { zone ->
-                    val r = RectF(
-                        zone.left * bmp.width,
-                        zone.top * bmp.height,
-                        zone.right * bmp.width,
-                        zone.bottom * bmp.height
-                    )
-                    canvas.drawRect(r, blackoutPaint)
+            // Only black out the pages the user selected ("" = all pages).
+            val pages = parsePageRanges(targetPages, bitmaps.size).toSet()
+            val applyHere = targetPages.isBlank() || i in pages
+                if (applyHere) {
+                    redactionZones.forEach { zone ->
+                        val r = RectF(
+                            zone.left * bmp.width,
+                            zone.top * bmp.height,
+                            zone.right * bmp.width,
+                            zone.bottom * bmp.height
+                        )
+                        canvas.drawRect(r, blackoutPaint)
+                    }
                 }
             }
 
@@ -733,45 +741,109 @@ object AdvancedPdfEngine {
         title: String = "Web Document",
         onProgress: (Int, Int) -> Unit
     ): File = withContext(Dispatchers.IO) {
-        onProgress(1, 1)
+        // Renders the page in a real WebView off the main thread (WebView must
+        // be created and touched on the thread that has a Looper; we hand the
+        // captured bitmap bitmaps over to the PDF writer once laid out).
+        val input = htmlOrUrl.trim()
+        val isUrl = input.startsWith("http://") || input.startsWith("https://")
+        val pageHtml = if (isUrl) null else input
+
+        // Width in CSS px for a 595pt page at ~96dpi (595 * 96 / 72).
+        val contentW = 793
+        val height = withContext(Dispatchers.Main) {
+            renderWebToHeight(context, isUrl, pageHtml, contentW, onProgress)
+        }
+        if (height <= 0) throw IllegalStateException("Could not render the page. Check the link or your internet connection.")
+
         val doc = PdfDocument()
-        val pageInfo = PdfDocument.PageInfo.Builder(595, 842, 1).create()
-        val page = doc.startPage(pageInfo)
-        val canvas = page.canvas
-        canvas.drawColor(Color.WHITE)
-
-        val headerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            textSize = 20f
-            typeface = Typeface.DEFAULT_BOLD
-            color = Color.rgb(30, 41, 59)
+        val pages = (height / 1122) + 1
+        for (seg in 0 until pages) {
+            onProgress(seg + 1, pages)
+            val bmp = withContext(Dispatchers.Main) {
+                renderWebToBitmap(context, isUrl, pageHtml, contentW, 1122, seg * 1122)
+            } ?: continue
+            val pageInfo = PdfDocument.PageInfo.Builder(595, 842, seg + 1).create()
+            val page = doc.startPage(pageInfo)
+            page.canvas.drawColor(Color.WHITE)
+            // Scale the 793px-wide capture down to 595pt page width.
+            val scale = 595f / bmp.width
+            val matrix = android.graphics.Matrix()
+            matrix.postScale(scale, scale)
+            page.canvas.drawBitmap(bmp, matrix, Paint(Paint.FILTER_BITMAP_FLAG))
+            doc.finishPage(page)
+            bmp.recycle()
         }
-        val bodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            textSize = 11f
-            color = Color.rgb(51, 65, 85)
-        }
-
-        canvas.drawText(title, 40f, 60f, headerPaint)
-        val dividerPaint = Paint().apply { color = Color.rgb(203, 213, 225); strokeWidth = 1f }
-        canvas.drawLine(40f, 75f, 555f, 75f, dividerPaint)
-
-        // Render plain clean text representation of HTML
-        val cleanText = htmlOrUrl.replace(Regex("<[^>]*>"), " ").replace(Regex("\\s+"), " ").trim()
-        val staticLayout = StaticLayout.Builder.obtain(cleanText, 0, cleanText.length, bodyPaint, 515)
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-            .setLineSpacing(0f, 1.3f)
-            .build()
-
-        canvas.save()
-        canvas.translate(40f, 95f)
-        staticLayout.draw(canvas)
-        canvas.restore()
-
-        doc.finishPage(page)
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val outFile = File(context.filesDir, "html_export_$timestamp.pdf")
-        FileOutputStream(outFile).use { doc.writeTo(it) }
         doc.close()
-        outFile
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        File(context.filesDir, "html_export_$timestamp.pdf")
+    }
+
+    /**
+     * Measures the full page height after the WebView finishes laying out.
+     */
+    private suspend fun renderWebToHeight(
+        context: Context,
+        isUrl: Boolean,
+        html: String?,
+        width: Int,
+        onProgress: (Int, Int) -> Unit
+    ): Int = suspendCancellableCoroutine { cont ->
+        val webView = WebView(context)
+        webView.layout(0, 0, width, 1)
+        webView.settings.javaScriptEnabled = true
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                view?.measure(
+                    View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+                )
+                view?.layout(0, 0, view.measuredWidth, view.measuredHeight)
+                if (cont.isActive) cont.resume(view?.measuredHeight ?: 0)
+            }
+        }
+        if (isUrl) webView.loadUrl(html!!) else webView.loadDataWithBaseURL(
+            null, html ?: "", "text/html", "UTF-8", null
+        )
+        cont.invokeOnCancellation { webView.destroy() }
+    }
+
+    /**
+     * Draws [height]px of the page, starting at [topOffset], into a Bitmap.
+     */
+    private suspend fun renderWebToBitmap(
+        context: Context,
+        isUrl: Boolean,
+        html: String?,
+        width: Int,
+        height: Int,
+        topOffset: Int
+    ): Bitmap? = suspendCancellableCoroutine { cont ->
+        val webView = WebView(context)
+        webView.layout(0, 0, width, height)
+        webView.settings.javaScriptEnabled = true
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                view?.measure(
+                    View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+                )
+                val h = (view?.measuredHeight ?: 0).coerceAtLeast(topOffset + height)
+                view?.layout(0, 0, view.measuredWidth, h)
+                view?.scrollTo(0, topOffset)
+                val bmp = if (view != null) {
+                    Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
+                        val c = Canvas(it)
+                        c.translate(0f, -topOffset.toFloat())
+                        view.draw(c)
+                    }
+                } else null
+                if (cont.isActive) cont.resume(bmp)
+            }
+        }
+        if (isUrl) webView.loadUrl(html!!) else webView.loadDataWithBaseURL(
+            null, html ?: "", "text/html", "UTF-8", null
+        )
+        cont.invokeOnCancellation { webView.destroy() }
     }
 
     // ==========================================
