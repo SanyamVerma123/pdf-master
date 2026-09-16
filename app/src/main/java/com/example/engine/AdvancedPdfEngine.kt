@@ -648,16 +648,15 @@ object AdvancedPdfEngine {
             // Only black out the pages the user selected ("" = all pages).
             val pages = parsePageRanges(targetPages, bitmaps.size).toSet()
             val applyHere = targetPages.isBlank() || i in pages
-                if (applyHere) {
-                    redactionZones.forEach { zone ->
-                        val r = RectF(
-                            zone.left * bmp.width,
-                            zone.top * bmp.height,
-                            zone.right * bmp.width,
-                            zone.bottom * bmp.height
-                        )
-                        canvas.drawRect(r, blackoutPaint)
-                    }
+            if (applyHere) {
+                redactionZones.forEach { zone ->
+                    val r = RectF(
+                        zone.left * bmp.width,
+                        zone.top * bmp.height,
+                        zone.right * bmp.width,
+                        zone.bottom * bmp.height
+                    )
+                    canvas.drawRect(r, blackoutPaint)
                 }
             }
 
