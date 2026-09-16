@@ -453,7 +453,7 @@ object DocumentScanner {
                         gray[i - sw + 1] + 2 * gray[i + 1] + gray[i + sw + 1]
                 val gy = -gray[i - sw - 1] - 2 * gray[i - sw] - gray[i - sw + 1] +
                         gray[i + sw - 1] + 2 * gray[i + sw] + gray[i + sw + 1]
-                val m = hypot(gx, gy).toInt()
+                val m = hypot(gx.toDouble(), gy.toDouble()).toInt()
                 mag[i] = m
                 if (m > maxMag) maxMag = m
             }
@@ -694,7 +694,7 @@ object DocumentScanner {
         val rad = Math.toRadians(angleDeg.toDouble())
         val cosA = cos(rad).toFloat()
         val sinA = sin(rad).toFloat()
-        val halfDiag = hypot(sw, sh) / 2f
+        val halfDiag = hypot(sw.toDouble(), sh.toDouble()) / 2f
         val rows = (halfDiag * 2).toInt() + 2
 
         val buckets = IntArray(rows)

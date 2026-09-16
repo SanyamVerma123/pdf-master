@@ -998,6 +998,9 @@ object AdvancedPdfEngine {
             showHeader = true,
             showPageNumbers = true
         )
-        PdfEngine.buildSearchableOcrPdf(pages, config) { cur, tot -> onProgress(cur, tot) }
+        PdfEngine.buildSearchableOcrPdf(
+            pages, config,
+            File(context.filesDir, "generated_pdfs").apply { mkdirs() }
+        ) { cur, tot -> onProgress(cur, tot) }
     }
 }

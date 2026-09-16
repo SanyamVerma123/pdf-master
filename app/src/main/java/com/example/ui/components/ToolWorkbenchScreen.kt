@@ -135,7 +135,8 @@ fun ToolWorkbenchScreen(
         ConversionType.MERGE_PDF,
         ConversionType.TEXT_TO_PDF,
         ConversionType.PDF_TO_IMAGES,
-        ConversionType.EXTRACT_TEXT
+        ConversionType.EXTRACT_TEXT,
+        ConversionType.SCAN_TO_PDF
     )) {
         UniversalPdfWorkbench(
             tool = tool,
@@ -276,6 +277,17 @@ fun ToolWorkbenchScreen(
                             onConvertOcrToPdf = onConvertOcrToPdf,
                             onSendToComposer = onSendToComposer
                         )
+                    }
+
+                    ConversionType.SCAN_TO_PDF -> {
+                        if (viewModel != null) {
+                            ScanToPdfWorkbench(
+                                viewModel = viewModel,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 0.dp)
+                            )
+                        }
                     }
 
                     ConversionType.MERGE_PDF -> {

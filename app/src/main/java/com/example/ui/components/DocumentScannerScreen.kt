@@ -66,6 +66,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
+import com.example.data.model.ScanPage
 import com.example.engine.ScanFilter
 import com.example.engine.ScanQuality
 import com.example.scanner.CameraSessionState
@@ -217,15 +218,17 @@ fun DocumentScannerScreen(
                     isProcessing = isProcessing,
                     onCapture = {
                         val rawDir = java.io.File(context.cacheDir, "scan_raw")
-                        cameraController.capture(
-                            onResult = { bitmap ->
-                                rawCaptureJob = coroutineScope.launch {
-                                    val rawUri = cameraController.saveRawCapture(bitmap, rawDir)
-                                    onCaptureRequested(rawUri)
-                                }
-                            },
-                            onError = { /* surfaced via controller state */ }
-                        )
+                        coroutineScope.launch {
+                            cameraController.capture(
+                                onResult = { bitmap ->
+                                    rawCaptureJob = coroutineScope.launch {
+                                        val rawUri = cameraController.saveRawCapture(bitmap, rawDir)
+                                        onCaptureRequested(rawUri)
+                                    }
+                                },
+                                onError = { /* surfaced via controller state */ }
+                            )
+                        }
                     },
                     onPickFromGallery = onPickFromGallery,
                     onDone = onDone,
@@ -247,15 +250,11 @@ fun DocumentScannerScreen(
 
 /**
  * One processed page as the scanner UI sees it.
+ *
+ * Aliased to the shared [ScanPage] data model so the UI and ViewModel never
+ * drift on the page shape.
  */
-data class ScanPageUi(
-    val id: String,
-    val processedUri: Uri,
-    val sourceUri: Uri,
-    val filter: ScanFilter,
-    val width: Int,
-    val height: Int
-)
+typealias ScanPageUi = ScanPage
 
 /**
  * Animated guide frame + crosshair shown over the live preview.
@@ -606,7 +605,9 @@ private fun CaptureControlsRow(
                 .border(1.dp, SlateBorder, CircleShape)
                 .clickable {
                     galleryLauncher.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        ActivityResultContracts.PickVisualMediaRequest(
+                            ActivityResultContracts.PickVisualMedia.ImageOnly
+                        )
                     )
                 }
                 .testTag("scanner_gallery_button"),

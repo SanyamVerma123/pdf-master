@@ -33,6 +33,7 @@ import com.example.engine.ShareUtils
 import com.example.ui.components.AccountScreen
 import com.example.ui.components.AppNavDrawerContent
 import com.example.ui.components.ConversionStatusCard
+import com.example.ui.components.DocumentScannerHost
 import com.example.ui.components.MinimalTopBar
 import com.example.ui.components.MyLibraryScreen
 import com.example.ui.components.MyPdfsScreen
@@ -109,6 +110,13 @@ fun OmniPdfApp(
     val viewerFile by viewModel.viewerFile.collectAsStateWithLifecycle()
     val viewerPages by viewModel.viewerPages.collectAsStateWithLifecycle()
     val isViewerLoading by viewModel.isViewerLoading.collectAsStateWithLifecycle()
+
+    // Live scanner states
+    val scanPages by viewModel.scanPages.collectAsStateWithLifecycle()
+    val scanFilter by viewModel.scanFilter.collectAsStateWithLifecycle()
+    val scanQuality by viewModel.scanQuality.collectAsStateWithLifecycle()
+    val isScanProcessing by viewModel.isScanProcessing.collectAsStateWithLifecycle()
+    val scannerLensFacing by viewModel.scannerLensFacing.collectAsStateWithLifecycle()
 
     // History / Vault states
     val historyRecords by viewModel.historyRecords.collectAsStateWithLifecycle()
@@ -297,7 +305,34 @@ fun OmniPdfApp(
                     }
 
                     // ====================================================
-                    // 3. DRAWER SECTION: MY PDFS
+                    // 3. FULL-SCREEN LIVE CAMERA SCANNER (Scan to PDF)
+                    // ====================================================
+                    is AppScreen.Scanner -> {
+                        DocumentScannerHost(
+                            scanPages = scanPages,
+                            scanFilter = scanFilter,
+                            scanQuality = scanQuality,
+                            isProcessing = isScanProcessing,
+                            lensFacing = scannerLensFacing,
+                            onProcessCapture = { rawUri ->
+                                viewModel.processScanCapture(rawUri)
+                            },
+                            onRefilterPage = { page -> viewModel.refilterScanPage(page) },
+                            onRemovePage = { page -> viewModel.removeScanPage(page) },
+                            onPickFromGallery = { uris -> viewModel.processGalleryScans(uris) },
+                            onFilterSelected = { filter -> viewModel.setScanFilter(filter) },
+                            onQualitySelected = { quality -> viewModel.setScanQuality(quality) },
+                            onFlipCamera = { facing -> viewModel.setScannerLensFacing(facing) },
+                            onDone = {
+                                viewModel.convertScansToPdf()
+                                viewModel.navigateBack()
+                            },
+                            onBack = { viewModel.navigateBack() }
+                        )
+                    }
+
+                    // ====================================================
+                    // 4. DRAWER SECTION: MY PDFS
                     // ====================================================
                     is AppScreen.MyPdfs -> {
                         MyPdfsScreen(

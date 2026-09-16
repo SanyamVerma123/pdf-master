@@ -8,14 +8,19 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.db.AppDatabase
 import com.example.data.model.ConversionType
 import com.example.data.model.PdfRecord
+import com.example.data.model.ScanPage
 import com.example.data.repository.PdfRepository
 import com.example.engine.CompressionLevel
+import com.example.engine.DocumentScanner
 import com.example.engine.ImagePdfConfig
 import com.example.engine.ImageScaleMode
 import com.example.engine.PageMargin
 import com.example.engine.PageOrientation
 import com.example.engine.PageSize
 import com.example.engine.PdfEngine
+import com.example.engine.ScanEnhanceConfig
+import com.example.engine.ScanFilter
+import com.example.engine.ScanQuality
 import com.example.engine.ShareUtils
 import com.example.engine.TextPdfConfig
 import com.example.ui.theme.ThemeMode
@@ -29,6 +34,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 data class PdfMetadataItem(
     val uri: Uri,
@@ -51,6 +59,9 @@ sealed class AppScreen {
     data object MyLibrary : AppScreen()
     data object Settings : AppScreen()
     data object Account : AppScreen()
+
+    /** Immersive full-screen live camera document scanner. */
+    data object Scanner : AppScreen()
 }
 
 class PdfConverterViewModel(application: Application) : AndroidViewModel(application) {
@@ -77,6 +88,11 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
     fun openTool(tool: ConversionType) {
         _activeTool.value = tool
         _currentScreen.value = AppScreen.ToolWorkbench(tool)
+    }
+
+    /** Jumps straight into the immersive live camera scanner. */
+    fun openScanner() {
+        _currentScreen.value = AppScreen.Scanner
     }
 
     fun navigateBack() {
@@ -209,6 +225,229 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
     val pageOrder: StateFlow<List<Int>> = _pageOrder.asStateFlow()
 
     fun setPageOrder(order: List<Int>) { _pageOrder.value = order }
+
+    // --- Live Camera Document Scanner ---
+    private val _scanPages = MutableStateFlow<List<ScanPage>>(emptyList())
+    val scanPages: StateFlow<List<ScanPage>> = _scanPages.asStateFlow()
+
+    private val _scanFilter = MutableStateFlow(ScanFilter.MAGIC_COLOR)
+    val scanFilter: StateFlow<ScanFilter> = _scanFilter.asStateFlow()
+
+    private val _scanQuality = MutableStateFlow(ScanQuality.BALANCED)
+    val scanQuality: StateFlow<ScanQuality> = _scanQuality.asStateFlow()
+
+    private val _isScanProcessing = MutableStateFlow(false)
+    val isScanProcessing: StateFlow<Boolean> = _isScanProcessing.asStateFlow()
+
+    private val _scannerError = MutableStateFlow<String?>(null)
+    val scannerError: StateFlow<String?> = _scannerError.asStateFlow()
+
+    // Lens facing is kept as an Int so it can round-trip through camera selector
+    // constants without pulling CameraX into the ViewModel layer.
+    private val _scannerLensFacing = MutableStateFlow(androidx.camera.core.CameraSelector.LENS_FACING_BACK)
+    val scannerLensFacing: StateFlow<Int> = _scannerLensFacing.asStateFlow()
+
+    /**
+     * Runs the enhance pipeline over a raw camera frame and appends the result.
+     */
+    suspend fun processScanCapture(rawUri: Uri) {
+        _isScanProcessing.value = true
+        _scannerError.value = null
+        try {
+            val processed = DocumentScanner.processScan(
+                context = getApplication(),
+                uri = rawUri,
+                config = ScanEnhanceConfig(
+                    filter = _scanFilter.value,
+                    quality = _scanQuality.value,
+                    autoDeskew = true,
+                    autoCrop = true,
+                    sharpen = true
+                )
+            )
+            _scanPages.update { current ->
+                current + ScanPage(
+                    id = processed.processedUri.toString(),
+                    processedUri = processed.processedUri,
+                    sourceUri = processed.sourceUri,
+                    filter = processed.filter,
+                    width = processed.width,
+                    height = processed.height
+                )
+            }
+        } catch (e: Exception) {
+            _scannerError.value = e.localizedMessage ?: "Failed to process scan."
+        } finally {
+            _isScanProcessing.value = false
+        }
+    }
+
+    fun setScanFilter(filter: ScanFilter) {
+        _scanFilter.value = filter
+    }
+
+    fun setScanQuality(quality: ScanQuality) {
+        _scanQuality.value = quality
+    }
+
+    fun setScannerLensFacing(lensFacing: Int) {
+        _scannerLensFacing.value = lensFacing
+    }
+
+    fun removeScanPage(page: ScanPage) {
+        _scanPages.update { current -> current.filterNot { it.id == page.id } }
+    }
+
+    fun clearScanPages() {
+        _scanPages.value = emptyList()
+        _scannerError.value = null
+    }
+
+    fun dismissScannerError() {
+        _scannerError.value = null
+    }
+
+    /**
+     * Imports gallery photos as scan pages by running the same enhance pipeline
+     * used for live camera captures.
+     */
+    fun processGalleryScans(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            _isScanProcessing.value = true
+            uris.forEach { uri ->
+                try {
+                    val processed = DocumentScanner.processScan(
+                        context = getApplication(),
+                        uri = uri,
+                        config = ScanEnhanceConfig(
+                            filter = _scanFilter.value,
+                            quality = _scanQuality.value,
+                            autoDeskew = true,
+                            autoCrop = true,
+                            sharpen = true
+                        )
+                    )
+                    _scanPages.update { current ->
+                        current + ScanPage(
+                            id = processed.processedUri.toString(),
+                            processedUri = processed.processedUri,
+                            sourceUri = processed.sourceUri,
+                            filter = processed.filter,
+                            width = processed.width,
+                            height = processed.height
+                        )
+                    }
+                } catch (e: Exception) {
+                    _scannerError.value = e.localizedMessage ?: "Failed to import a photo."
+                }
+            }
+            _isScanProcessing.value = false
+        }
+    }
+
+    /**
+     * Re-runs the enhance pipeline on the *original* raw frame of [page] with the
+     * currently selected filter, keeping filtering non-destructive.
+     */
+    fun refilterScanPage(page: ScanPage) {
+        viewModelScope.launch {
+            _isScanProcessing.value = true
+            try {
+                val newUri = DocumentScanner.refilterScan(
+                    context = getApplication(),
+                    sourceUri = page.sourceUri,
+                    filter = _scanFilter.value
+                )
+                _scanPages.update { current ->
+                    current.map { existing ->
+                        if (existing.id == page.id) {
+                            existing.copy(processedUri = newUri, filter = _scanFilter.value)
+                        } else existing
+                    }
+                }
+            } catch (e: Exception) {
+                _scannerError.value = e.localizedMessage ?: "Failed to apply filter."
+            } finally {
+                _isScanProcessing.value = false
+            }
+        }
+    }
+
+    /**
+     * Hands the processed scan pages to the image-to-PDF pipeline and records the
+     * result in the vault as a [ConversionType.SCAN_TO_PDF] entry.
+     */
+    fun convertScansToPdf() {
+        val pages = _scanPages.value
+        if (pages.isEmpty()) {
+            _conversionState.value = ConversionUiState.Error("Capture at least one scan first.")
+            return
+        }
+
+        viewModelScope.launch {
+            _conversionState.value = ConversionUiState.Processing(0, pages.size, "Compiling scans into PDF...")
+            try {
+                val config = _imageConfig.value.copy(
+                    pageSize = PageSize.FIT_IMAGE,
+                    scaleMode = ImageScaleMode.FIT,
+                    showPageNumbers = pages.size > 1
+                )
+                val file = PdfEngine.convertImagesToPdf(
+                    context = getApplication(),
+                    imageUris = pages.map { it.processedUri },
+                    config = config,
+                    onProgress = { cur, tot ->
+                        _conversionState.value = ConversionUiState.Processing(cur, tot, "Rendering page $cur of $tot...")
+                    }
+                )
+
+                val record = PdfRecord(
+                    fileName = file.name,
+                    filePath = file.absolutePath,
+                    fileSizeBytes = file.length(),
+                    pageCount = pages.size,
+                    conversionType = ConversionType.SCAN_TO_PDF,
+                    description = "Scanned ${pages.size} page(s) with in-app camera scanner"
+                )
+                repository.insert(record)
+                _conversionState.value = ConversionUiState.Success(file, record)
+            } catch (e: Exception) {
+                _conversionState.value = ConversionUiState.Error(e.localizedMessage ?: "Failed to build scan PDF.")
+            }
+        }
+    }
+
+    /**
+     * Runs ML Kit OCR over the processed scan pages and routes the extracted text
+     * into the OCR workbench for review.
+     */
+    fun runOcrOnScans() {
+        val pages = _scanPages.value
+        if (pages.isEmpty()) return
+
+        viewModelScope.launch {
+            _conversionState.value = ConversionUiState.Processing(0, pages.size, "Reading text from scans...")
+            try {
+                val text = PdfEngine.extractTextFromMultipleImages(
+                    context = getApplication(),
+                    uris = pages.map { it.processedUri },
+                    onProgress = { cur, tot ->
+                        _conversionState.value = ConversionUiState.Processing(cur, tot, "OCR page $cur of $tot...")
+                    }
+                )
+                _ocrImages.value = pages.map { it.processedUri }
+                _ocrExtractedText.value = text
+                _ocrDocumentTitle.value = "Camera Scan " +
+                    SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+                _activeTool.value = ConversionType.PHOTO_OCR_TO_PDF
+                _currentScreen.value = AppScreen.ToolWorkbench(ConversionType.PHOTO_OCR_TO_PDF)
+                _conversionState.value = ConversionUiState.Idle
+            } catch (e: Exception) {
+                _conversionState.value = ConversionUiState.Error(e.localizedMessage ?: "OCR failed on scans.")
+            }
+        }
+    }
 
     // --- Vault / History Filtering ---
     private val _searchQuery = MutableStateFlow("")

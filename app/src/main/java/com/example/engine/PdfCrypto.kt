@@ -24,11 +24,24 @@ internal object PdfCrypto {
     private val PAD = byteArrayOf(
         0x28, 0xBF.toByte(), 0x4E, 0x5E, 0x4E, 0x75, 0x8A.toByte(), 0x41,
         0x64, 0x00, 0x4E, 0x56, 0xFF.toByte(), 0xFA.toByte(), 0x01, 0x08,
-        0x2E, 0x2E, 0x00, 0xB6.toByte(), 0xD0.toByte(), 0x68, 0x3E, 0x80,
-        0x2F, 0x0C, 0xA9.toByte(), 0xFE.toByte(), 0x64, 0x53, 0x69, 0x7A
+        0x2E, 0x2E, 0x00, 0xB6.toByte(), 0xD0.toByte(), 0x68, 0x3E, 0x80.toByte(),
+        0x2F, 0x0C, 0xA9.toByte(), 0xFE.toByte(), 0x64, 0x53, 0x69, 0x7A.toByte()
     )
 
     private const val PERMS = 0xFFFFFFFC.toInt()
+
+    private fun lastKw(b: ByteArray, kw: String, from: Int): Int {
+        val k = kw.toByteArray(Charsets.ISO_8859_1)
+        var i = minOf(from, b.size - k.size)
+        while (i >= 0) {
+            var ok = true
+            for (j in k.indices) if (b[i + j] != k[j]) { ok = false; break }
+            if (ok) return i
+            i--
+        }
+        return -1
+    }
+
     private const val KEYLEN = 5
 
     private class ObjInfo(val num: Int, val start: Int, val payloadStart: Int, val payloadEnd: Int)
@@ -122,10 +135,10 @@ internal object PdfCrypto {
     private fun xrefTablePos(raw: ByteArray): Int {
         // Classic xref table only. Position is taken from the original (unencrypted)
         // bytes; offsets stay identical after encryption because RC4 preserves length.
-        var i = raw.lastIndexOf("startxref".toByteArray(Charsets.ISO_8859_1))
+        var i = findKw(raw, "startxref", 0)
         if (i < 0) return -1
         // walk back to the "xref" keyword that startxref points at
-        var x = raw.lastIndexOf("xref".toByteArray(Charsets.ISO_8859_1), i)
+        var x = lastKw(raw, "xref", i)
         return x
     }
 
@@ -136,7 +149,7 @@ internal object PdfCrypto {
     fun encrypt(src: File, dst: File, userPassword: String, ownerPassword: String = userPassword): File {
         require(userPassword.isNotEmpty()) { "Password must not be empty" }
         val raw = src.readBytes()
-        require(raw.size > 16 && raw.startsWith("%PDF".toByteArray())) { "Not a valid PDF" }
+        require(raw.size > 16 && raw.copyOfRange(0, 4).contentEquals("%PDF".toByteArray())) { "Not a valid PDF" }
 
         val xrefPos = xrefTablePos(raw)
         require(xrefPos > 0) { "This PDF uses a cross-reference stream and cannot be re-encrypted." }
@@ -185,9 +198,10 @@ internal object PdfCrypto {
         // Preserve the original trailer dict (it carries /Root), injecting
         // /Encrypt and updating /Size. RC4 preserves byte length, so every body
         // object's offset in the original xref stays valid.
-        val origTrailer = String(raw, raw.lastIndexOf("trailer".toByteArray(Charsets.ISO_8859_1)), xrefPos - raw.lastIndexOf("trailer".toByteArray(Charsets.ISO_8859_1)), Charsets.ISO_8859_1)
+        val trStart = lastKw(raw, "trailer", xrefPos)
+        val origTrailer = String(raw, trStart, xrefPos - trStart, Charsets.ISO_8859_1)
         var tr = origTrailer.replace(Regex("/Size\\s+\\d+"), "/Size ${encObjNum + 1}")
-        tr = tr.replaceFirst("<<", "<< /Encrypt $encObjNum 0 R", 1)
+        tr = tr.replaceFirst("<<", "<< /Encrypt $encObjNum 0 R")
         result.write(tr.toByteArray(Charsets.ISO_8859_1))
         result.write("startxref\n$xrefOffset\n%%EOF\n".toByteArray())
 
@@ -269,7 +283,7 @@ internal object PdfCrypto {
         val userPad = pad(userPw)
         var oVal = rc4(rc4Key, userPad)
         repeat(19) { idx ->
-            val k = ByteArray(KEYLEN) { rc4Key[it] xor (idx + 1).toByte() }
+            val k = ByteArray(KEYLEN) { (rc4Key[it].toInt() xor (idx + 1)).toByte() }
             oVal = rc4(k, oVal)
         }
 
@@ -284,7 +298,7 @@ internal object PdfCrypto {
         val uh = md5(PAD + fileId)
         var uVal = rc4(key, uh)
         repeat(19) { idx ->
-            val k = ByteArray(KEYLEN) { key[it] xor (idx + 1).toByte() }
+            val k = ByteArray(KEYLEN) { (key[it].toInt() xor (idx + 1)).toByte() }
             uVal = rc4(k, uVal)
         }
         return Triple(key, oVal, uVal)

@@ -98,10 +98,10 @@ class CameraXController(private val context: Context) {
                 capture
             )
 
-            provider = cameraProvider
-            this.preview = preview
-            imageCapture = capture
-            camera = boundCamera
+            this@CameraXController.provider = cameraProvider
+            this@CameraXController.preview = preview
+            this@CameraXController.imageCapture = capture
+            this@CameraXController.camera = boundCamera
 
             update {
                 it.copy(

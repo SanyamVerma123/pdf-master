@@ -949,7 +949,10 @@ object PdfEngine {
             showPageNumbers = true
         )
 
-        buildSearchableOcrPdf(pages, config) { cur, tot ->
+        buildSearchableOcrPdf(
+            pages, config,
+            File(context.filesDir, "generated_pdfs").apply { mkdirs() }
+        ) { cur, tot ->
             onProgress(cur, tot)
         }
     }
@@ -964,9 +967,10 @@ object PdfEngine {
     suspend fun buildSearchableOcrPdf(
         pages: List<OcrPagePublic>,
         config: TextPdfConfig,
+        outputDirRef: File,
         onProgress: (current: Int, total: Int) -> Unit
     ): File = withContext(Dispatchers.IO) {
-        val outputDir = File(context.filesDir, "generated_pdfs").apply { mkdirs() }
+        val outputDir = outputDirRef.apply { mkdirs() }
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
         val name = if (config.customFileName.isNotBlank()) {
             val clean = config.customFileName.trim().replace(Regex("[^a-zA-Z0-9._-]"), "_")
