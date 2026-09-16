@@ -1277,8 +1277,8 @@ object AdvancedPdfEngine {
         val bitmaps = PdfEngine.renderAllPagesFromPdfUri(context, pdfUri)
         if (bitmaps.isEmpty()) throw IllegalStateException("Could not read the PDF pages.")
 
-        outDir = File(context.filesDir, "generated_pdfs").apply { mkdirs() }
-        val out = File(outDir, "ocr_layout_${System.currentTimeMillis()}.pdf")
+        val dir = File(context.filesDir, "generated_pdfs").apply { mkdirs() }
+        val out = File(dir, "ocr_layout_${System.currentTimeMillis()}.pdf")
 
         val doc = PdfDocument()
         try {
@@ -1328,7 +1328,8 @@ object AdvancedPdfEngine {
                 }
                 doc.finishPage(page)
             }
-            FileOutputStream(out).use { doc.writeTo(it) }
+            val os: java.io.OutputStream = FileOutputStream(out)
+            os.use { doc.writeTo(it) }
         } finally {
             doc.close()
         }

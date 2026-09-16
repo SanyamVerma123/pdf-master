@@ -2,6 +2,7 @@ package com.example.engine
 
 import android.content.Context
 import android.graphics.Bitmap
+import com.example.data.model.ScanPage
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorMatrix

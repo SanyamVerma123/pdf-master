@@ -1,5 +1,8 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.Image
+import androidx.compose.ui.layout.ContentScale
+
 import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
@@ -1181,7 +1184,8 @@ fun UniversalPdfWorkbench(
                 onRemovePage = { index ->
                     // Removing a staged page invalidates the indices used by the
                     // annotation map, so shift every entry above it down.
-                    pageBitmaps = pageBitmaps.toMutableList().apply { removeAt(index) }
+                    val current = pageBitmaps.toMutableList().also { it.removeAt(index) }
+                    pageBitmaps = current
                     val shifted = pageAnnotations.toMap()
                     pageAnnotations.clear()
                     shifted.forEach { (key, strokes) ->
