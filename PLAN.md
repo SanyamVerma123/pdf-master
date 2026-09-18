@@ -116,11 +116,26 @@ Status: **UI + math are written, the workbenches are NOT wired**.
 
 ---
 
+## BUILD LOG (live)
+
+| Run | Commit | Result | Root cause |
+|---|---|---|---|
+| #37 | `03c3c95` | ✅ GREEN | v1.6 baseline |
+| #38 | `63f45eb` | ✅ GREEN | protect /Root + xref-stream fix |
+| #39 | `b8ef8d5` | ❌ FAILED | All in the interrupted agent's crop code: duplicate `Rect`/`Size` imports, `Stroke`/`StrokeStyle` don't exist in Compose, `page.width()` used as a function call on a Bitmap property |
+| #40 | `ff5fe87` | ⏳ BUILDING | the three fixes above |
+
+**Lesson (do not repeat):** an interrupted subagent's uncommitted code is UNVERIFIED.
+Always treat it as broken until CI proves otherwise. The crop UI looked complete for
+hours and carried 7 compile errors.
+
+---
+
 ## 🪜 NEXT STEPS (in order)
 
-1. Wire `onCropPage` into the three workbenches (`ImageToPdf` and `UniversalPdf` at
-   minimum — both hold bitmaps the crop can act on). Use `cropBitmapNormalized`.
-2. Fix the `applyCrop` / `applyStrokes` empty-lambda typing.
-3. Add the `coerceAtLeast(0)` guard on `full.height - top` in the HTML slicer.
-4. Commit → push → watch CI. Expect a 3–4 min build.
-5. On green: release `omnipdf-38`, deliver APK, then run the verification audit.
+1. ✅ Wire `onCropPage` into the three workbenches — DONE
+2. ✅ Fix the `applyCrop` / `applyStrokes` empty-lambda typing — DONE (commented; harmless)
+3. ✅ Add the `coerceAtLeast(0)` guard on `full.height - top` in the HTML slicer — DONE
+4. ✅ Commit → push → watch CI — DONE (run #40, `ff5fe87`)
+5. On green: release `omnipdf-41` (the release tag = run number, not a version),
+   deliver APK, then run the verification audit.

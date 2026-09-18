@@ -58,6 +58,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -130,9 +131,10 @@ fun PageEditSheet(
     val strokes = remember { mutableStateListOf<PointF>() }
     // Zero-arg lambdas by default: both APPLY buttons live outside the
     // BoxWithConstraints that computes the geometry, so they are assigned real
-    // implementations once the page has been measured.
-    var applyStrokes by remember { mutableStateOf({}) }
-    var applyCrop by remember { mutableStateOf({}) }
+    // implementations once the page has been measured. The explicit () -> Unit
+    // type keeps the empty default from making the lambda's own type ambiguous.
+    var applyStrokes by remember { mutableStateOf<() -> Unit>({}) }
+    var applyCrop by remember { mutableStateOf<() -> Unit>({}) }
     val density = LocalDensity.current
     val listState = rememberLazyListState()
 
