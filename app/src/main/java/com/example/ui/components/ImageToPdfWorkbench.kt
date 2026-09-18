@@ -101,7 +101,6 @@ fun ImageToPdfWorkbench(
     onUpdateConfig: ((ImagePdfConfig) -> ImagePdfConfig) -> Unit,
     onConvert: () -> Unit,
     onReplaceImage: (Int, Uri) -> Unit = { _, _ -> },
-    onOcrScan: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val photoPickerLauncher = rememberLauncherForActivityResult(
@@ -584,9 +583,6 @@ fun ImageToPdfWorkbench(
                 )
             }
         }
-
-        // OCR was removed in v1.8. This button and the whole Photo OCR tool are
-        // gone; onOcrScan stays as an optional param so callers compile.
 
         // Action Button: Convert Now
         Button(

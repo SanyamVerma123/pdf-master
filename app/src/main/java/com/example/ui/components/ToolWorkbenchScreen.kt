@@ -70,21 +70,6 @@ fun ToolWorkbenchScreen(
     onClearImages: () -> Unit,
     onUpdateImageConfig: ((ImagePdfConfig) -> ImagePdfConfig) -> Unit,
     onConvertImages: () -> Unit,
-    onOcrScanShortcut: () -> Unit,
-
-    // Photo OCR parameters
-    ocrImages: List<Uri>,
-    ocrExtractedText: String,
-    ocrDocumentTitle: String,
-    isOcrScanning: Boolean,
-    onAddOcrImages: (List<Uri>) -> Unit,
-    onRemoveOcrImage: (Int) -> Unit,
-    onClearOcrImages: () -> Unit,
-    onOcrTextChange: (String) -> Unit,
-    onOcrTitleChange: (String) -> Unit,
-    onScanOcr: () -> Unit,
-    onConvertOcrToPdf: () -> Unit,
-    onSendToComposer: () -> Unit,
 
     // Text to PDF parameters
     textTitle: String,
@@ -258,8 +243,7 @@ fun ToolWorkbenchScreen(
                             onReplaceImage = onReplaceImage,
                             onClearImages = onClearImages,
                             onUpdateConfig = onUpdateImageConfig,
-                            onConvert = onConvertImages,
-                            onOcrScan = onOcrScanShortcut
+                            onConvert = onConvertImages
                         )
                     }
 

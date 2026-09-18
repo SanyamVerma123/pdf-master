@@ -1394,23 +1394,15 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                             _conversionState.value = ConversionUiState.Processing(cur, tot, "Organizing page $cur of $tot")
                         }
                     }
-                    // OCR_PDF was removed in v1.8. The branch is deliberately
-                    // absent; an unreachable enum value never reaches here.
+                    // Extract the embedded text layer; if the PDF is a pure image
+                    // scan with no text layer, this yields an empty string. There is
+                    // no on-device OCR fallback in v1.8 (the OCR tool was removed).
                     ConversionType.EXTRACT_TEXT -> {
                         if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
                         _conversionState.value = ConversionUiState.Processing(1, 1, "Extracting text...")
-                        // Tries the embedded text layer first; if the PDF is a
-                        // scan with none, fall back to on-device OCR.
-                        var text = com.example.engine.PdfEngine.extractTextFromPdfUriTextLayer(app, pdfUri) ?: ""
+                        val text = com.example.engine.PdfEngine.extractTextFromPdfUriTextLayer(app, pdfUri) ?: ""
                         if (text.isBlank()) {
-                            val renders = com.example.engine.PdfEngine.renderAllPagesFromPdfUri(app, pdfUri)
-                            text = renders.mapIndexed { i, bmp ->
-                                _conversionState.value = ConversionUiState.Processing(i + 1, renders.size, "Scanning page ${i + 1} of ${renders.size}...")
-                                com.example.engine.AdvancedPdfEngine.extractTextFromBitmap(bmp)
-                            }.joinToString("\n\n")
-                        }
-                        if (text.isBlank()) {
-                            _conversionState.value = ConversionUiState.Error("No extractable text was found in this PDF.")
+                            _conversionState.value = ConversionUiState.Error("No extractable text was found in this PDF. The document may be a scanned image with no text layer.")
                             return@launch
                         }
                         outputFile = File(app.cacheDir, "extracted_text_${System.currentTimeMillis()}.txt")
