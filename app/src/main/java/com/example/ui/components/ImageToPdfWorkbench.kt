@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
 import coil.compose.AsyncImage
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -38,6 +40,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material.icons.filled.DragIndicator
@@ -97,6 +100,7 @@ fun ImageToPdfWorkbench(
     onClearImages: () -> Unit,
     onUpdateConfig: ((ImagePdfConfig) -> ImagePdfConfig) -> Unit,
     onConvert: () -> Unit,
+    onReplaceImage: (Int, Uri) -> Unit = { _, _ -> },
     onOcrScan: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -108,6 +112,18 @@ fun ImageToPdfWorkbench(
         }
     }
 
+    // CAMERA: capture a single photo straight into the staged page list. The
+    // contract takes a temp Uri we own, so the result is a real file Uri the
+    // export pipeline can read (no ContentResolver takeable-permission needed).
+    var cameraOutUri by remember { mutableStateOf<Uri?>(null) }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { saved ->
+        val uri = cameraOutUri
+        if (saved && uri != null) onAddImages(listOf(uri))
+        cameraOutUri = null
+    }
+
     var showAdvancedSettings by remember { mutableStateOf(false) }
 
     // Page editor: rendered bitmaps of the staged images, decoded on demand the
@@ -117,6 +133,22 @@ fun ImageToPdfWorkbench(
     var isLoadingPageBitmaps by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // Persists an edited page bitmap and swaps the staged Uri so the preview
+    // grid AND the export pipeline both reflect the edit.
+    fun persistEdit(index: Int, bmp: android.graphics.Bitmap) {
+        scope.launch {
+            persistEditedPage(
+                context = context,
+                uris = selectedImages,
+                index = index,
+                bitmap = bmp
+            ) { updated -> updated.forEachIndexed { i, uri ->
+                    if (uri != selectedImages.getOrNull(i)) onReplaceImage(i, uri)
+                }
+            }
+        }
+    }
 
     Column(
         modifier = modifier
@@ -261,6 +293,38 @@ fun ImageToPdfWorkbench(
                             color = TextTertiary
                         )
                     )
+                    // Camera: capture a page straight into this PDF.
+                    OutlinedButton(
+                        onClick = {
+                            val dir = java.io.File(context.cacheDir, "camera_captures").apply { mkdirs() }
+                            val file = java.io.File(dir, "img_${System.currentTimeMillis()}.jpg")
+                            cameraOutUri = androidx.core.content.FileProvider.getUriForFile(
+                                context,
+                                "${context.packageName}.fileprovider",
+                                file
+                            )
+                            cameraOutUri?.let { cameraLauncher.launch(it) }
+                        },
+                        border = androidx.compose.foundation.BorderStroke(1.dp, CrimsonPrimary),
+                        modifier = Modifier.testTag("camera_capture_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PhotoCamera,
+                            contentDescription = "Capture with camera",
+                            tint = CrimsonPrimary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "USE CAMERA",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = CrimsonPrimary
+                            )
+                        )
+                    }
                 }
             }
         } else {
@@ -521,38 +585,8 @@ fun ImageToPdfWorkbench(
             }
         }
 
-        // OCR Text Extraction Shortcut
-        if (selectedImages.isNotEmpty() && onOcrScan != null) {
-            OutlinedButton(
-                onClick = onOcrScan,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(44.dp)
-                    .testTag("ocr_from_images_button")
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.DocumentScanner,
-                        contentDescription = null,
-                        tint = CrimsonPrimary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Text(
-                        text = "EXTRACT TEXT WITH OCR SCANNER",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            letterSpacing = 0.5.sp
-                        )
-                    )
-                }
-            }
-        }
+        // OCR was removed in v1.8. This button and the whole Photo OCR tool are
+        // gone; onOcrScan stays as an optional param so callers compile.
 
         // Action Button: Convert Now
         Button(
@@ -630,7 +664,9 @@ fun ImageToPdfWorkbench(
                     pageBitmaps = pageBitmaps.toMutableList().apply {
                         val bmp = getOrNull(index) ?: return@PageEditSheet
                         val matrix = android.graphics.Matrix().apply { postRotate(90f) }
-                        set(index, android.graphics.Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true))
+                        val rotated = android.graphics.Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+                        set(index, rotated)
+                        persistEdit(index, rotated)
                     }
                 },
                 onRemovePage = { index ->
@@ -638,13 +674,22 @@ fun ImageToPdfWorkbench(
                     pageBitmaps = pageBitmaps.toMutableList().apply { removeAt(index) }
                     editingPageIndex = null
                 },
-                onAnnotatePage = { _, _ -> },
+                onAnnotatePage = { index, strokes ->
+                    val bmp = pageBitmaps.getOrNull(index) ?: return@PageEditSheet
+                    // Burn annotations into the staged page so they survive into
+                    // the exported PDF (the export reads the Uri list, not memory).
+                    val rendered = renderAnnotationsToBitmap(bmp, strokes)
+                    pageBitmaps = pageBitmaps.toMutableList().apply { set(index, rendered) }
+                    persistEdit(index, rendered)
+                },
                 onCropPage = { index, crop ->
                     pageBitmaps = pageBitmaps.toMutableList().apply {
                         val bmp = getOrNull(index) ?: return@PageEditSheet
                         // Crop the staged bitmap in place so the result shows in
                         // the preview grid and lands in the exported PDF.
-                        set(index, cropBitmapNormalized(bmp, crop))
+                        val cropped = cropBitmapNormalized(bmp, crop)
+                        set(index, cropped)
+                        persistEdit(index, cropped)
                     }
                 }
             )

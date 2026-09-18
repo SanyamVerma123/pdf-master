@@ -105,12 +105,13 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
     val conversionState: StateFlow<ConversionUiState> = _conversionState.asStateFlow()
 
     // Theme Mode
-    private val _themeMode = MutableStateFlow(ThemeMode.DARK)
+    // v1.8: LIGHT is the app default (previously DARK).
+    private val _themeMode = MutableStateFlow(ThemeMode.LIGHT)
     val themeMode: StateFlow<ThemeMode> = _themeMode.asStateFlow()
 
     fun toggleThemeMode() {
         _themeMode.update { current ->
-            if (current == ThemeMode.DARK) ThemeMode.LIGHT else ThemeMode.DARK
+            if (current == ThemeMode.LIGHT) ThemeMode.DARK else ThemeMode.LIGHT
         }
     }
 
@@ -157,19 +158,6 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
             }
         }
     }
-
-    // --- Tool: Photo OCR ---
-    private val _ocrImages = MutableStateFlow<List<Uri>>(emptyList())
-    val ocrImages: StateFlow<List<Uri>> = _ocrImages.asStateFlow()
-
-    private val _ocrDocumentTitle = MutableStateFlow("Scanned Document")
-    val ocrDocumentTitle: StateFlow<String> = _ocrDocumentTitle.asStateFlow()
-
-    private val _ocrExtractedText = MutableStateFlow("")
-    val ocrExtractedText: StateFlow<String> = _ocrExtractedText.asStateFlow()
-
-    private val _isOcrScanning = MutableStateFlow(false)
-    val isOcrScanning: StateFlow<Boolean> = _isOcrScanning.asStateFlow()
 
     // --- Tool 1: Images to PDF ---
     private val _selectedImages = MutableStateFlow<List<Uri>>(emptyList())
@@ -489,37 +477,6 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
-    /**
-     * Runs ML Kit OCR over the processed scan pages and routes the extracted text
-     * into the OCR workbench for review.
-     */
-    fun runOcrOnScans() {
-        val pages = _scanPages.value
-        if (pages.isEmpty()) return
-
-        viewModelScope.launch {
-            _conversionState.value = ConversionUiState.Processing(0, pages.size, "Reading text from scans...")
-            try {
-                val text = PdfEngine.extractTextFromMultipleImages(
-                    context = getApplication(),
-                    uris = pages.map { it.processedUri },
-                    onProgress = { cur, tot ->
-                        _conversionState.value = ConversionUiState.Processing(cur, tot, "OCR page $cur of $tot...")
-                    }
-                )
-                _ocrImages.value = pages.map { it.processedUri }
-                _ocrExtractedText.value = text
-                _ocrDocumentTitle.value = "Camera Scan " +
-                    SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-                _activeTool.value = ConversionType.PHOTO_OCR_TO_PDF
-                _currentScreen.value = AppScreen.ToolWorkbench(ConversionType.PHOTO_OCR_TO_PDF)
-                _conversionState.value = ConversionUiState.Idle
-            } catch (e: Exception) {
-                _conversionState.value = ConversionUiState.Error(e.localizedMessage ?: "OCR failed on scans.")
-            }
-        }
-    }
-
     // --- Vault / History Filtering ---
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -576,6 +533,15 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    // Replaces a staged page with its edited version (crop / rotate / annotate
+    // persisted to a temp file). The export pipeline reads this same list, so a
+    // swap here lands in the generated PDF - the fix for edits vanishing.
+    fun replaceImage(index: Int, uri: Uri) {
+        _selectedImages.update { current ->
+            if (index in current.indices) current.toMutableList().apply { set(index, uri) } else current
+        }
+    }
+
     fun clearImages() {
         _selectedImages.value = emptyList()
     }
@@ -602,12 +568,28 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                         _conversionState.value = ConversionUiState.Processing(cur, tot, "Processing page $cur of $tot...")
                     }
                 )
+                // Guard: a zero-length file means the render produced nothing
+                // (every image failed to decode). Never report Success on an
+                // empty file - that is what produced "unable to open / corrupted".
+                if (!file.exists() || file.length() == 0L) {
+                    _conversionState.value = ConversionUiState.Error(
+                        "No page could be rendered from the selected images. The files may be unreadable or in an unsupported format."
+                    )
+                    return@launch
+                }
+                val pages = PdfEngine.inspectPdf(getApplication(), Uri.fromFile(file)).first
+                if (pages <= 0) {
+                    _conversionState.value = ConversionUiState.Error(
+                        "The generated PDF has no pages. The selected images could not be read."
+                    )
+                    return@launch
+                }
 
                 val record = PdfRecord(
                     fileName = file.name,
                     filePath = file.absolutePath,
                     fileSizeBytes = file.length(),
-                    pageCount = uris.size,
+                    pageCount = pages,
                     conversionType = ConversionType.IMAGE_TO_PDF,
                     description = "${uris.size} image(s) converted"
                 )
@@ -710,107 +692,10 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
         _selectedPdfsForMerge.value = emptyList()
     }
 
-    // --- Photo OCR Actions ---
-    fun addOcrImages(uris: List<Uri>) {
-        _ocrImages.update { it + uris }
-    }
-
-    fun removeOcrImage(index: Int) {
-        _ocrImages.update { current ->
-            if (index in current.indices) current.toMutableList().apply { removeAt(index) } else current
-        }
-    }
-
-    fun clearOcrImages() {
-        _ocrImages.value = emptyList()
-        _ocrExtractedText.value = ""
-    }
-
-    fun updateOcrText(text: String) {
-        _ocrExtractedText.value = text
-    }
-
-    fun updateOcrTitle(title: String) {
-        _ocrDocumentTitle.value = title
-    }
-
-    fun scanOcr() {
-        val images = _ocrImages.value
-        if (images.isEmpty()) return
-
-        viewModelScope.launch {
-            _isOcrScanning.value = true
-            try {
-                val text = PdfEngine.extractTextFromMultipleImages(
-                    context = getApplication(),
-                    uris = images,
-                    onProgress = { _, _ -> }
-                )
-                _ocrExtractedText.value = text
-            } catch (e: Exception) {
-                _ocrExtractedText.value = "Error during OCR: ${e.localizedMessage}"
-            } finally {
-                _isOcrScanning.value = false
-            }
-        }
-    }
-
-    fun scanOcrFromSelectedImages() {
-        val images = _selectedImages.value
-        if (images.isEmpty()) return
-        _ocrImages.value = images
-        _activeTool.value = ConversionType.PHOTO_OCR_TO_PDF
-        scanOcr()
-    }
-
-    fun convertOcrToPdf() {
-        val text = _ocrExtractedText.value
-        if (text.isBlank()) return
-
-        viewModelScope.launch {
-            _conversionState.value = ConversionUiState.Processing(0, 1, "Compiling OCR PDF...")
-            try {
-                val config = TextPdfConfig(
-                    title = _ocrDocumentTitle.value.ifBlank { "OCR Scanned Document" },
-                    fontSize = 12f,
-                    showHeader = true,
-                    showPageNumbers = true
-                )
-                val file = PdfEngine.convertTextToPdf(
-                    context = getApplication(),
-                    content = text,
-                    config = config,
-                    onProgress = { cur, tot ->
-                        _conversionState.value = ConversionUiState.Processing(cur, tot, "Writing page $cur of $tot...")
-                    }
-                )
-
-                val (pages, size) = PdfEngine.inspectPdf(getApplication(), Uri.fromFile(file))
-                val record = PdfRecord(
-                    fileName = file.name,
-                    filePath = file.absolutePath,
-                    fileSizeBytes = size,
-                    pageCount = pages,
-                    conversionType = ConversionType.PHOTO_OCR_TO_PDF,
-                    description = "OCR Scanned from ${_ocrImages.value.size} photos"
-                )
-                repository.insert(record)
-                _conversionState.value = ConversionUiState.Success(file, record)
-            } catch (e: Exception) {
-                _conversionState.value = ConversionUiState.Error(e.localizedMessage ?: "Failed to convert OCR text to PDF.")
-            }
-        }
-    }
-
-    fun sendOcrToComposer() {
-        _textTitle.value = _ocrDocumentTitle.value
-        _textContent.value = _ocrExtractedText.value
-        _activeTool.value = ConversionType.TEXT_TO_PDF
-    }
-
     fun updateMergeFileName(name: String) {
         _mergeFileName.value = name
     }
+
 
     fun mergePdfs() {
         val items = _selectedPdfsForMerge.value
@@ -1125,18 +1010,13 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    /**
+     * Kept for the "send page to OCR" affordance in the page extractor. The OCR
+     * tool was removed in v1.8, so this now routes the page into Images-to-PDF
+     * (the nearest surviving tool) instead of into a deleted screen.
+     */
     fun sendExtractedPageToOcr(pageIndex: Int) {
-        val bitmaps = _extractedPages.value
-        if (pageIndex !in bitmaps.indices) return
-        viewModelScope.launch {
-            try {
-                val file = PdfEngine.exportSingleBitmap(getApplication(), bitmaps[pageIndex], "ocr_cut", pageIndex + 1)
-                _ocrImages.value = listOf(Uri.fromFile(file))
-                _activeTool.value = ConversionType.PHOTO_OCR_TO_PDF
-                _currentScreen.value = AppScreen.ToolWorkbench(ConversionType.PHOTO_OCR_TO_PDF)
-                scanOcr()
-            } catch (_: Exception) {}
-        }
+        sendExtractedPageToImageToPdf(pageIndex)
     }
 
     fun sendExtractedPageToImageToPdf(pageIndex: Int) {
@@ -1270,7 +1150,10 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                     ConversionType.COMPRESS_PDF -> {
                         if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
                         _conversionState.value = ConversionUiState.Processing(3, 10, "Optimizing and compressing pages...")
-                        outputFile = com.example.engine.AdvancedPdfEngine.compressPdf(
+                        val before = runCatching {
+                            com.example.engine.PdfEngine.copyUriToTemp(app, pdfUri)?.length() ?: 0L
+                        }.getOrDefault(0L)
+                        val compressed = com.example.engine.AdvancedPdfEngine.compressPdf(
                             context = app,
                             pdfUri = pdfUri,
                             dpi = compressDpi,
@@ -1279,6 +1162,17 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                         ) { cur, tot ->
                             _conversionState.value = ConversionUiState.Processing(cur, tot, "Compressing page $cur of $tot")
                         }
+                        // A vector/text PDF can come out LARGER after rasterizing;
+                        // the engine returns the untouched original in that case.
+                        // Make it clear to the user instead of looking like a bug.
+                        if (compressed.length() >= before && before > 0L) {
+                            _conversionState.value = ConversionUiState.Error(
+                                "This PDF is already optimized - it cannot be made smaller without " +
+                                    "losing quality. Vector/text pages do not shrink when rasterized."
+                            )
+                            return@launch
+                        }
+                        outputFile = compressed
                     }
                     ConversionType.SPLIT_PDF -> {
                         if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
@@ -1500,16 +1394,8 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                             _conversionState.value = ConversionUiState.Processing(cur, tot, "Organizing page $cur of $tot")
                         }
                     }
-                    ConversionType.OCR_PDF -> {
-                        if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
-                        _conversionState.value = ConversionUiState.Processing(1, 1, "Running OCR on document...")
-                        outputFile = com.example.engine.AdvancedPdfEngine.ocrPdf(
-                            context = app,
-                            pdfUri = pdfUri
-                        ) { cur, tot ->
-                            _conversionState.value = ConversionUiState.Processing(cur, tot, "Recognizing page $cur of $tot")
-                        }
-                    }
+                    // OCR_PDF was removed in v1.8. The branch is deliberately
+                    // absent; an unreachable enum value never reaches here.
                     ConversionType.EXTRACT_TEXT -> {
                         if (pdfUri == null) throw IllegalArgumentException("Please select a PDF document first")
                         _conversionState.value = ConversionUiState.Processing(1, 1, "Extracting text...")
@@ -1563,3 +1449,4 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch { repository.clearAll() }
     }
 }
+

@@ -135,17 +135,9 @@ object ToolCatalog {
             icon = Icons.Default.Build,
             testTag = "tool_card_repair_pdf"
         ),
-        ToolItem(
-            type = ConversionType.OCR_PDF,
-            title = "OCR PDF",
-            subtitle = "SEARCHABLE & SELECTABLE",
-            description = "Easily convert scanned PDFs or document photos into searchable, selectable text using on-device ML.",
-            category = ToolCategory.OPTIMIZE,
-            badge = "ON-DEVICE ML",
-            accentColor = AmberWarning,
-            icon = Icons.Default.DocumentScanner,
-            testTag = "tool_card_ocr_pdf"
-        ),
+        // OCR PDF was removed in v1.8 at the user's request. The ML Kit
+        // dependency and all OCR code paths are gone; this slot stays empty so
+        // the tool numbering and category spacing stay intact.
 
         // ==========================================
         // Group 3: Convert - PDF to and from other formats

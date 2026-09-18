@@ -3,6 +3,9 @@ package com.example.engine
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * Real PDF password protection (PDF 1.4 spec, section 3.5.2, Algorithms 2-7):
@@ -270,15 +273,17 @@ internal object PdfCrypto {
         return seg.contains("/Type") && seg.contains("/XRef")
     }
 
-    private fun encryptPayload(payload: ByteArray, num: Int, gen: Int, key: ByteArray): ByteArray {
+    private fun encryptPayload(
+        payload: ByteArray, num: Int, gen: Int, key: ByteArray, useAes: Boolean = false
+    ): ByteArray {
         val b = payload.copyOf()
         var i = 0
         var inStream = false
         while (i < b.size) {
             if (!inStream) {
                 val s = findKw(b, "stream", i)
-                if (s < 0) { encryptStrings(b, i, b.size, num, gen, key); break }
-                encryptStrings(b, i, s, num, gen, key)
+                if (s < 0) { encryptStrings(b, i, b.size, num, gen, key, useAes); break }
+                encryptStrings(b, i, s, num, gen, key, useAes)
                 var d = s + "stream".length
                 if (d < b.size && b[d] == 0x0D.toByte()) d++
                 if (d < b.size && b[d] == 0x0A.toByte()) d++
@@ -290,7 +295,12 @@ internal object PdfCrypto {
                 var end = e
                 if (end - 1 >= i && b[end - 1] == 0x0A.toByte()) end--
                 if (end - 1 >= i && b[end - 1] == 0x0D.toByte()) end--
-                if (i < end) System.arraycopy(rc4(objKey(key, num, gen), b.sliceArray(i until end)), 0, b, i, end - i)
+                if (i < end) {
+                    val seg = b.sliceArray(i until end)
+                    val transformed = if (useAes) aesDecrypt(objKey(key, num, gen), seg)
+                                      else rc4(objKey(key, num, gen), seg)
+                    System.arraycopy(transformed, 0, b, i, transformed.size)
+                }
                 i = e + "endstream".length
                 inStream = false
             }
@@ -299,10 +309,25 @@ internal object PdfCrypto {
     }
 
     /**
+     * AES in CBC mode with a random 16-byte IV stored IN the stream (PDF 3.5,
+     * Algorithm 3.1a): the IV precedes the ciphertext, so decrypting consumes
+     * the first 16 bytes as the IV and the rest is payload.
+     */
+    private fun aesDecrypt(key: ByteArray, data: ByteArray): ByteArray {
+        require(data.size >= 16) { "Encrypted stream too short for an AES IV." }
+        val iv = data.sliceArray(0 until 16)
+        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+        return cipher.doFinal(data, 16, data.size - 16)
+    }
+
+    /**
      * Encrypts PDF literal strings "( ... )" within [from, to). Backslash escapes
      * are respected so a "(" inside a string never terminates it.
      */
-    private fun encryptStrings(b: ByteArray, from: Int, to: Int, num: Int, gen: Int, key: ByteArray) {
+    private fun encryptStrings(
+        b: ByteArray, from: Int, to: Int, num: Int, gen: Int, key: ByteArray, useAes: Boolean = false
+    ) {
         var i = from
         while (i < to) {
             if (b[i] != 0x28.toByte()) { i++; continue }
@@ -317,12 +342,23 @@ internal object PdfCrypto {
             }
             if (i < to) {
                 if (i > start) {
-                    val enc = rc4(objKey(key, num, gen), b.sliceArray(start until i))
+                    val plain = b.sliceArray(start until i)
+                    val enc = if (useAes) aesEncrypt(objKey(key, num, gen), plain)
+                              else rc4(objKey(key, num, gen), plain)
                     System.arraycopy(enc, 0, b, start, enc.size)
                 }
                 i++
             }
         }
+    }
+
+    private fun aesEncrypt(key: ByteArray, data: ByteArray): ByteArray {
+        // For strings the IV is written inline too (same rule as streams), so
+        // generate one and prepend it to the ciphertext.
+        val iv = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
+        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+        return iv + cipher.doFinal(data)
     }
 
     private fun readOrSynthesizeFileId(raw: ByteArray): ByteArray {
@@ -393,6 +429,16 @@ internal object PdfCrypto {
         val encDictEnd = findKw(raw, "endobj", encObjMatch.range.last + 1)
         val encText = text.substring(encObjMatch.range.last + 1, encDictEnd)
 
+        // ---- Cipher selection (PDF 3.5 spec): /V is the algorithm, /R the
+        // revision. Older viewers only offered RC4; /V>=4 adds AES, where each
+        // stream/string carries its own 16-byte IV prefix.
+        val vVal = Regex("/V\\s+(\\d+)").find(encText)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+        val rVal = Regex("/R\\s+(\\d+)").find(encText)?.groupValues?.get(1)?.toIntOrNull() ?: 2
+        // /Length is in BITS; classic 40-bit files omit it and default to 40.
+        val lengthBits = Regex("/Length\\s+(\\d+)").find(encText)?.groupValues?.get(1)?.toIntOrNull() ?: 40
+        val keyLen = (lengthBits / 8).coerceIn(5, 32)
+        val useAes = vVal >= 4 || rVal >= 4
+
         val oVal = fromHex(Regex("/O\\s*<([^>]*)>").find(encText)?.groupValues?.get(1)
             ?: throw IllegalStateException("Malformed encryption dictionary (missing /O)."))
         val uVal = fromHex(Regex("/U\\s*<([^>]*)>").find(encText)?.groupValues?.get(1)
@@ -403,15 +449,15 @@ internal object PdfCrypto {
         val fileId = if (idMatch != null) fromHex(idMatch.groupValues[1]) else ByteArray(0)
         if (fileId.size != 16) throw IllegalStateException("Could not read the document ID.")
 
-        val key = deriveKeyFromUserPassword(password, oVal, pVal, fileId)
-        checkUserPassword(key, uVal, fileId, password)
+        val key = deriveKeyFromUserPassword(password, oVal, pVal, fileId, keyLen, rVal)
+        checkUserPassword(key, uVal, fileId, password, rVal, useAes)
 
         val objs = parseObjects(raw)
         val out = raw.copyOf()
         for (o in objs) {
             if (o.num == encNum) continue               // never decrypt the /Encrypt dict
             val payload = out.sliceArray(o.payloadStart until o.payloadEnd)
-            System.arraycopy(decryptPayload(payload, o.num, 0, key), 0, out, o.payloadStart, payload.size)
+            System.arraycopy(decryptPayload(payload, o.num, 0, key, useAes), 0, out, o.payloadStart, payload.size)
         }
 
         // Drop the encryption object and strip /Encrypt from the trailer.
@@ -424,19 +470,75 @@ internal object PdfCrypto {
         return dst
     }
 
-    private fun deriveKeyFromUserPassword(pw: String, oVal: ByteArray, pVal: Int, fileId: ByteArray): ByteArray {
+    /**
+     * Algorithm 2 (R<=4) / Algorithm 2.B (R>=5): derive the file encryption key
+     * from the user password. R6+ uses a SHA-256 hash chain; older revisions use
+     * the padded-password MD5 with 50 re-hash rounds.
+     */
+    private fun deriveKeyFromUserPassword(
+        pw: String, oVal: ByteArray, pVal: Int, fileId: ByteArray, keyLen: Int, rVal: Int
+    ): ByteArray {
+        if (rVal >= 5) {
+            // Algorithm 2.B: SHA-256 of the UTF-8 password + /O validation salt.
+            val salt = oVal.sliceArray(32..39)
+            val digest = MessageDigest.getInstance("SHA-256")
+                .digest(pw.toByteArray(Charsets.UTF_8) + salt)
+            // 2.B.5: 64 rounds of XOR-ing the hash back in (see Algorithm 2.B).
+            var x = digest
+            repeat(64) {
+                val K = ByteArray(x.size + oVal.size + fileId.size)
+                System.arraycopy(x, 0, K, 0, x.size)
+                System.arraycopy(oVal, 0, K, x.size, oVal.size)
+                System.arraycopy(fileId, 0, K, x.size + oVal.size, fileId.size)
+                x = ByteArray(0)
+                // Each round re-hashes in 64-byte blocks.
+                val md = MessageDigest.getInstance("SHA-256")
+                var off = 0
+                while (off < K.size) {
+                    val block = K.sliceArray(off until minOf(off + 64, K.size))
+                    md.update(block)
+                    off += 64
+                }
+                x = md.digest()
+            }
+            return x.sliceArray(0 until keyLen)
+        }
+        // Algorithm 2: pad + MD5(/O /P /ID), then 50 re-hash rounds of the first
+        // n bytes (NOT the whole digest - the original bug hashed all 16).
         var hash = md5(pad(pw) + oVal + intLe4(pVal) + fileId)
-        repeat(50) { hash = md5(hash) }
-        return hash.sliceArray(0 until 5)
+        repeat(50) { hash = md5(hash.sliceArray(0 until keyLen)) }
+        return hash.sliceArray(0 until keyLen)
     }
 
-    private fun checkUserPassword(key: ByteArray, uVal: ByteArray, fileId: ByteArray, pw: String) {
-        val expected = rc4(key, md5(PAD + fileId))
+    private fun checkUserPassword(
+        key: ByteArray, uVal: ByteArray, fileId: ByteArray, pw: String, rVal: Int, useAes: Boolean
+    ) {
+        if (rVal >= 5) {
+            // Algorithm 3.6 / 2.B.6: recompute /U from the key + user-key salt
+            // and compare the leading 32 bytes.
+            val md = MessageDigest.getInstance("SHA-256")
+            md.update(pw.toByteArray(Charsets.UTF_8))
+            md.update(key)
+            md.update(uVal.sliceArray(32..39))
+            val expected = md.digest()
+            if (!expected.contentEquals(uVal.sliceArray(0 until 32))) {
+                throw IllegalStateException("Incorrect password. Please check and try again.")
+            }
+            return
+        }
+        val expected = if (useAes) {
+            // R4+: /U is MD5(password + /O + /P /ID) keyed through the file key
+            // with AES, then only the first 16 bytes matter.
+            md5(pad(pw) + fileId)
+        } else {
+            rc4(key, md5(PAD + fileId))
+        }
         if (!expected.contentEquals(uVal.sliceArray(0 until expected.size))) {
             throw IllegalStateException("Incorrect password. Please check and try again.")
         }
     }
 
-    private fun decryptPayload(payload: ByteArray, num: Int, gen: Int, key: ByteArray): ByteArray =
-        encryptPayload(payload, num, gen, key)
+    private fun decryptPayload(
+        payload: ByteArray, num: Int, gen: Int, key: ByteArray, useAes: Boolean
+    ): ByteArray = encryptPayload(payload, num, gen, key, useAes)
 }

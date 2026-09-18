@@ -19,9 +19,6 @@ import android.os.ParcelFileDescriptor
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -144,6 +141,11 @@ object AdvancedPdfEngine {
 
     // ==========================================
     // 3. COMPRESS PDF
+    //
+    // Rasterizes each page to a JPEG and rebuilds the document. Vector/text
+    // pages often can NOT be shrunk this way (a rasterized page is frequently
+    // LARGER than the vector original), so the output is compared to the input:
+    // if it isn't smaller, the ORIGINAL is returned untouched with a note.
     // ==========================================
     suspend fun compressPdf(
         context: Context,
@@ -154,6 +156,7 @@ object AdvancedPdfEngine {
         onProgress: (Int, Int) -> Unit
     ): File = withContext(Dispatchers.IO) {
         val tempPdf = PdfEngine.copyUriToTemp(context, pdfUri) ?: throw IllegalStateException("Failed to read PDF")
+        val originalSize = tempPdf.length()
         val pfd = ParcelFileDescriptor.open(tempPdf, ParcelFileDescriptor.MODE_READ_ONLY)
         val renderer = PdfRenderer(pfd)
         val pageCount = renderer.pageCount
@@ -164,41 +167,57 @@ object AdvancedPdfEngine {
             if (isGrayscale) colorFilter = ColorMatrixColorFilter(colorMatrix)
         }
 
-        for (i in 0 until pageCount) {
-            onProgress(i + 1, pageCount)
-            val page = renderer.openPage(i)
-            val scale = (dpi / 72f).coerceIn(0.5f, 2.5f)
-            val targetW = (page.width * scale).toInt().coerceAtLeast(100)
-            val targetH = (page.height * scale).toInt().coerceAtLeast(100)
+        try {
+            for (i in 0 until pageCount) {
+                onProgress(i + 1, pageCount)
+                val page = renderer.openPage(i)
+                // Keep the re-render sharp: DPI is the horizontal resolution, so
+                // a higher value preserves text legibility. Never below 100 DPI.
+                val scale = (dpi / 72f).coerceIn(1f, 4f)
+                val targetW = (page.width * scale).toInt().coerceAtLeast(100)
+                val targetH = (page.height * scale).toInt().coerceAtLeast(100)
 
-            val rawBitmap = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
-            page.render(rawBitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-            page.close()
+                val rawBitmap = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+                page.render(rawBitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                page.close()
 
-            // Compress to JPEG stream
-            val stream = ByteArrayOutputStream()
-            rawBitmap.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(10, 100), stream)
-            val compressedBytes = stream.toByteArray()
-            val compressedBmp = BitmapFactory.decodeByteArray(compressedBytes, 0, compressedBytes.size)
+                // Compress to JPEG stream
+                val stream = ByteArrayOutputStream()
+                rawBitmap.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(10, 100), stream)
+                val compressedBytes = stream.toByteArray()
+                val compressedBmp = BitmapFactory.decodeByteArray(compressedBytes, 0, compressedBytes.size)
 
-            val pageInfo = PdfDocument.PageInfo.Builder(page.width, page.height, i + 1).create()
-            val docPage = doc.startPage(pageInfo)
-            docPage.canvas.drawBitmap(compressedBmp, null, RectF(0f, 0f, page.width.toFloat(), page.height.toFloat()), paint)
-            doc.finishPage(docPage)
+                val pageInfo = PdfDocument.PageInfo.Builder(page.width, page.height, i + 1).create()
+                val docPage = doc.startPage(pageInfo)
+                docPage.canvas.drawBitmap(compressedBmp, null, RectF(0f, 0f, page.width.toFloat(), page.height.toFloat()), paint)
+                doc.finishPage(docPage)
 
-            rawBitmap.recycle()
-            compressedBmp.recycle()
+                rawBitmap.recycle()
+                compressedBmp.recycle()
+            }
+        } finally {
+            renderer.close()
+            pfd.close()
         }
-
-        renderer.close()
-        pfd.close()
-        tempPdf.delete()
 
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val outFile = File(context.filesDir, "compressed_doc_${dpi}dpi_$timestamp.pdf")
         FileOutputStream(outFile).use { doc.writeTo(it) }
         doc.close()
-        outFile
+
+        // The whole point of compression is a smaller file. If rasterizing made
+        // it bigger (typical for vector/text PDFs), do NOT ship a blurrier,
+        // larger file: return the original untouched.
+        if (outFile.length() >= originalSize) {
+            outFile.delete()
+            val fallback = File(context.filesDir, "uncompressed_$timestamp.pdf")
+            tempPdf.copyTo(fallback, overwrite = true)
+            tempPdf.delete()
+            fallback
+        } else {
+            tempPdf.delete()
+            outFile
+        }
     }
 
     // ==========================================
@@ -1102,173 +1121,6 @@ object AdvancedPdfEngine {
         outFile
     }
 
-    // Helper: extract text from Bitmap with Google ML Kit.
-    //
-    // ML Kit groups recognized text into Blocks -> Elements, and its default
-    // ordering follows the object-detection pass, which is NOT the visual
-    // reading order of the page (two columns, captions and side notes end up
-    // interleaved with the body text). Reading order is reconstructed here from
-    // the line bounding boxes: lines are sorted top-to-bottom, then lines whose
-    // vertical spans overlap are treated as one visual row and sorted
-    // left-to-right within it, which is how a human reads the page.
-    suspend fun extractTextFromBitmap(bitmap: Bitmap): String = withContext(Dispatchers.IO) {
-        suspendCancellableCoroutine { cont ->
-            try {
-                val image = InputImage.fromBitmap(bitmap, 0)
-                val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-                recognizer.process(image)
-                    .addOnSuccessListener { visionText ->
-                        if (cont.isActive) cont.resume(reconstructReadingOrder(visionText))
-                    }
-                    .addOnFailureListener {
-                        if (cont.isActive) cont.resume("")
-                    }
-            } catch (_: Exception) {
-                if (cont.isActive) cont.resume("")
-            }
-        }
-    }
-
-    /**
-     * Shared entry point for reading-order reconstruction so that every OCR
-     * path in the app (photo OCR, scan OCR, PDF OCR, text extraction) emits
-     * identically ordered text.
-     */
-    fun extractTextWithReadingOrder(visionText: com.google.mlkit.vision.text.Text): String =
-        reconstructReadingOrder(visionText)
-
-    /**
-     * Turns ML Kit's [com.google.mlkit.vision.text.Text] into page-ordered text.
-     *
-     * 1. Collect every [com.google.mlkit.vision.text.Text.Line] across all blocks
-     *    (blocks themselves have no useful order).
-     * 2. Sort by vertical position (top of the line box).
-     * 3. Walk the sorted list and group lines into visual rows: a line joins the
-     *    current row when its top sits inside the vertical band the row has
-     *    built so far (or is close enough that it is visually the same line).
-     *    Lines inside one row are ordered left-to-right.
-     * 4. Separate rows by a newline, paragraphs by a blank line, so the emitted
-     *    text keeps the layout of the image instead of being a jumble.
-     */
-    private fun reconstructReadingOrder(visionText: com.google.mlkit.vision.text.Text): String {
-        data class LineBox(val text: String, val left: Float, val top: Float, val bottom: Float)
-
-        val lines = mutableListOf<LineBox>()
-        for (block in visionText.textBlocks) {
-            for (line in block.lines) {
-                val raw = line.text.trim()
-                if (raw.isEmpty()) continue
-                val b = line.boundingBox ?: continue
-                lines.add(LineBox(raw, b.left.toFloat(), b.top.toFloat(), b.bottom.toFloat()))
-            }
-        }
-        if (lines.isEmpty()) return visionText.text.trim()
-
-        // Average glyph height drives both the row-grouping tolerance and the
-        // "is this the start of a new paragraph" test below.
-        val avgHeight = lines.map { it.bottom - it.top }.avg().coerceAtLeast(1f)
-        // A line belongs to the same visual row when its top is within this
-        // fraction of a line height of the row's band; generous, because
-        // detected line boxes on the same printed row rarely align exactly.
-        val rowTolerance = avgHeight * 0.55f
-
-        // Pass 1: order lines top-to-bottom.
-        val byTop = lines.sortedBy { it.top }
-
-        // Pass 2: cluster consecutive lines into visual rows.
-        val rows = mutableListOf<MutableList<LineBox>>()
-        var currentRow = mutableListOf<LineBox>()
-        var rowTop = Float.MAX_VALUE
-        var rowBottom = Float.MIN_VALUE
-        for (line in byTop) {
-            if (currentRow.isEmpty()) {
-                currentRow.add(line)
-                rowTop = line.top
-                rowBottom = line.bottom
-            } else if (line.top <= rowBottom + rowTolerance) {
-                // Vertically overlaps the row being built -> same visual line.
-                currentRow.add(line)
-                rowTop = minOf(rowTop, line.top)
-                rowBottom = maxOf(rowBottom, line.bottom)
-            } else {
-                rows.add(currentRow)
-                currentRow = mutableListOf(line)
-                rowTop = line.top
-                rowBottom = line.bottom
-            }
-        }
-        if (currentRow.isNotEmpty()) rows.add(currentRow)
-
-        // Pass 3: order each row left-to-right and emit. A large vertical jump
-        // between consecutive rows marks a paragraph break.
-        val output = StringBuilder()
-        var previousRowBottom = Float.MIN_VALUE
-        for (row in rows) {
-            if (previousRowBottom != Float.MIN_VALUE) {
-                val gap = row.minOf { it.top } - previousRowBottom
-                if (gap > avgHeight * 0.9f) output.append("\n\n")
-                else output.append('\n')
-            }
-            output.append(row.sortedBy { it.left }.joinToString("  ") { it.text })
-            previousRowBottom = row.maxOf { it.bottom }
-        }
-        return output.toString().trim()
-    }
-
-    private fun List<Float>.avg(): Float =
-        if (isEmpty()) 0f else sum() / size
-
-    /**
-     * Layout-preserving OCR: returns each text line together with its pixel
-     * bounding box and size, so a caller can rebuild the page at the same
-     * position, alignment and scale as the original - a text "Xerox" of the
-     * image rather than a plain transcript.
-     */
-    data class OcrLine(
-        val text: String,
-        val left: Float,
-        val top: Float,
-        val right: Float,
-        val bottom: Float,
-        val angle: Float
-    )
-
-    suspend fun extractTextWithLayout(bitmap: Bitmap): List<OcrLine> = withContext(Dispatchers.IO) {
-        suspendCancellableCoroutine { cont ->
-            try {
-                val image = InputImage.fromBitmap(bitmap, 0)
-                val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-                recognizer.process(image)
-                    .addOnSuccessListener { visionText ->
-                        val out = mutableListOf<OcrLine>()
-                        // ML Kit's blocks -> lines already follow reading order;
-                        // iterate them so headings and columns keep their place.
-                        for (block in visionText.textBlocks) {
-                            for (line in block.lines) {
-                                val b = line.boundingBox ?: continue
-                                out.add(
-                                    OcrLine(
-                                        text = line.text,
-                                        left = b.exactCenterX() - b.width() / 2f,
-                                        top = b.exactCenterY() - b.height() / 2f,
-                                        right = b.exactCenterX() + b.width() / 2f,
-                                        bottom = b.exactCenterY() + b.height() / 2f,
-                                        angle = line.angle
-                                    )
-                                )
-                            }
-                        }
-                        if (cont.isActive) cont.resume(out)
-                    }
-                    .addOnFailureListener {
-                        if (cont.isActive) cont.resume(emptyList())
-                    }
-            } catch (_: Exception) {
-                if (cont.isActive) cont.resume(emptyList())
-            }
-        }
-    }
-
     private fun parsePageRanges(ranges: String, maxPages: Int): List<Int> {
         val result = mutableSetOf<Int>()
         val parts = ranges.split(",")
@@ -1290,99 +1142,5 @@ object AdvancedPdfEngine {
         }
         return if (result.isEmpty()) (0 until maxPages).toList() else result.toList().sorted()
     }
-
-    // ==========================================
-    // 17. OCR PDF (make an existing PDF searchable)
-    // ==========================================
-    /**
-     * OCR PDF (make an existing PDF searchable).
-     *
-     * The user wants the OUTPUT TO CONTAIN ONLY THE EXTRACTED TEXT, laid out
-     * like the original page - the scanned page IMAGE IS DROPPED. So this now
-     * delegates to [ocrPdfLayoutPreserving], which draws pure text at the
-     * coordinates ML Kit found it at: headings stay centred, body stays
-     * left-aligned, every line keeps its place and size. Reading order comes
-     * from [extractTextWithLayout], which walks ML Kit's blocks -> lines.
-     */
-    suspend fun ocrPdf(
-        context: Context,
-        pdfUri: Uri,
-        onProgress: (Int, Int) -> Unit
-    ): File = ocrPdfLayoutPreserving(context, pdfUri, onProgress)
-
-    /**
-     * Layout-preserving OCR. Rebuilds each page as pure text positioned at the
-     * coordinates ML Kit actually found it: headings stay centred, body stays
-     * left-aligned, every line keeps its place and size - a text photocopy of
-     * the original page. The source page image is dropped.
-     *
-     * Lines come from [extractTextWithLayout], which walks ML Kit's text blocks
-     * and their lines in reading order, so multi-column and heading/body pages
-     * are reconstructed in the order a human reads them.
-     */
-    suspend fun ocrPdfLayoutPreserving(
-        context: Context,
-        pdfUri: Uri,
-        onProgress: (Int, Int) -> Unit
-    ): File = withContext(Dispatchers.IO) {
-        val bitmaps = PdfEngine.renderAllPagesFromPdfUri(context, pdfUri)
-        if (bitmaps.isEmpty()) throw IllegalStateException("Could not read the PDF pages.")
-
-        val dir = File(context.filesDir, "generated_pdfs").apply { mkdirs() }
-        val out = File(dir, "ocr_layout_${System.currentTimeMillis()}.pdf")
-
-        val doc = PdfDocument()
-        try {
-            bitmaps.forEachIndexed { idx, bmp ->
-                onProgress(idx + 1, bitmaps.size)
-
-                // A4 portrait at the image's aspect ratio, 72 dpi page units.
-                val dpi = 72f
-                val pw = (bmp.width.toFloat() / dpi * 72f).coerceIn(200f, 1200f)
-                val ph = pw * bmp.height.toFloat() / bmp.width.toFloat()
-                val pageInfo = PdfDocument.PageInfo.Builder(
-                    pw.toInt().coerceAtLeast(200), ph.toInt().coerceAtLeast(280), idx + 1
-                ).create()
-                val page = doc.startPage(pageInfo)
-                val canvas = page.canvas
-
-                // White paper, then every recognised line at its own spot.
-                canvas.drawColor(android.graphics.Color.WHITE)
-
-                val lines = extractTextWithLayout(bmp)
-                val scaleX = pw / bmp.width.toFloat()
-                val scaleY = ph / bmp.height.toFloat()
-
-                for (ln in lines) {
-                    if (ln.text.isBlank()) continue
-                    val fontSize = ((ln.bottom - ln.top) * scaleY).coerceIn(4f, 72f)
-                    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                        color = android.graphics.Color.BLACK
-                        textSize = fontSize
-                        // Helvetica stands in for the unknown original typeface.
-                        typeface = android.graphics.Typeface.create(
-                            android.graphics.Typeface.DEFAULT, android.graphics.Typeface.NORMAL
-                        )
-                    }
-                    // Baseline sits ~0.8 of the way down the line box.
-                    val baseline = ln.top * scaleY + fontSize * 0.85f
-                    canvas.save()
-                    if (ln.angle != 0f) {
-                        canvas.rotate(
-                            ln.angle,
-                            (ln.left * scaleX + (ln.right - ln.left) * scaleX * 0.5f),
-                            ln.top * scaleY + (ln.bottom - ln.top) * scaleY * 0.5f
-                        )
-                    }
-                    canvas.drawText(ln.text, ln.left * scaleX, baseline, paint)
-                    canvas.restore()
-                }
-                doc.finishPage(page)
-            }
-            FileOutputStream(out).use { doc.writeTo(it) }
-        } finally {
-            doc.close()
-        }
-        out
-    }
 }
+

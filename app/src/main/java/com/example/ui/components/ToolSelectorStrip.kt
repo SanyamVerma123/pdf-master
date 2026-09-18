@@ -54,12 +54,6 @@ val AVAILABLE_TOOLS = listOf(
         icon = Icons.Outlined.PhotoLibrary
     ),
     ToolDefinition(
-        type = ConversionType.PHOTO_OCR_TO_PDF,
-        label = "Photo OCR",
-        subtitle = "Scan to PDF",
-        icon = Icons.Outlined.DocumentScanner
-    ),
-    ToolDefinition(
         type = ConversionType.TEXT_TO_PDF,
         label = "Text to PDF",
         subtitle = "Notes & Docs",

@@ -66,6 +66,7 @@ fun ToolWorkbenchScreen(
     onAddImages: (List<Uri>) -> Unit,
     onRemoveImage: (Int) -> Unit,
     onMoveImage: (Int, Int) -> Unit,
+    onReplaceImage: (Int, Uri) -> Unit = { _, _ -> },
     onClearImages: () -> Unit,
     onUpdateImageConfig: ((ImagePdfConfig) -> ImagePdfConfig) -> Unit,
     onConvertImages: () -> Unit,
@@ -131,7 +132,6 @@ fun ToolWorkbenchScreen(
 ) {
     if (viewModel != null && tool !in listOf(
         ConversionType.IMAGE_TO_PDF,
-        ConversionType.PHOTO_OCR_TO_PDF,
         ConversionType.MERGE_PDF,
         ConversionType.TEXT_TO_PDF,
         ConversionType.PDF_TO_IMAGES,
@@ -255,6 +255,7 @@ fun ToolWorkbenchScreen(
                             onAddImages = onAddImages,
                             onRemoveImage = onRemoveImage,
                             onMoveImage = onMoveImage,
+                            onReplaceImage = onReplaceImage,
                             onClearImages = onClearImages,
                             onUpdateConfig = onUpdateImageConfig,
                             onConvert = onConvertImages,
@@ -262,22 +263,9 @@ fun ToolWorkbenchScreen(
                         )
                     }
 
-                    ConversionType.PHOTO_OCR_TO_PDF -> {
-                        PhotoOcrWorkbench(
-                            selectedImages = ocrImages,
-                            extractedOcrText = ocrExtractedText,
-                            ocrDocumentTitle = ocrDocumentTitle,
-                            isOcrScanning = isOcrScanning,
-                            onAddImages = onAddOcrImages,
-                            onRemoveImage = onRemoveOcrImage,
-                            onClearImages = onClearOcrImages,
-                            onOcrTextChange = onOcrTextChange,
-                            onOcrTitleChange = onOcrTitleChange,
-                            onScanOcr = onScanOcr,
-                            onConvertOcrToPdf = onConvertOcrToPdf,
-                            onSendToComposer = onSendToComposer
-                        )
-                    }
+                    // PHOTO_OCR_TO_PDF removed in v1.8. The enum value is kept
+                    // so saved DB history rows still deserialize; this screen is
+                    // unreachable because the tool card and shortcut are gone.
 
                     ConversionType.SCAN_TO_PDF -> {
                         if (viewModel != null) {

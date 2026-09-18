@@ -342,27 +342,8 @@ fun ScanToPdfWorkbench(
                 }
             }
 
-            Button(
-                onClick = { viewModel.runOcrOnScans() },
-                enabled = scanPages.isNotEmpty() && !isProcessing,
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("scan_ocr_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.DocumentScanner,
-                    contentDescription = null,
-                    tint = TextPrimary,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = "EXTRACT TEXT (OCR)",
-                    style = CameraWorkbenchLabel.copy(color = TextPrimary)
-                )
-            }
+            // The "EXTRACT TEXT (OCR)" button was removed in v1.8 when the OCR
+            // tool was deleted. Scan-to-PDF now compiles straight to PDF.
 
             if (scanPages.isNotEmpty()) {
                 // Preview thumbnail strip (same shape as JPG->PDF's page list):

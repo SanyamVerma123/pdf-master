@@ -52,14 +52,15 @@ private val LightColorScheme = lightColorScheme(
 )
 
 enum class ThemeMode {
-    SYSTEM,
+    LIGHT,
     DARK,
-    LIGHT
+    SYSTEM
 }
 
 @Composable
 fun MyApplicationTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    // v1.8: app default is light mode (was dark).
+    darkTheme: Boolean = false,
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {

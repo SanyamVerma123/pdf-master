@@ -73,7 +73,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun OmniPdfApp(
     viewModel: PdfConverterViewModel = viewModel(),
-    isDarkTheme: Boolean = true
+    isDarkTheme: Boolean = false
 ) {
     val currentScreen by viewModel.currentScreen.collectAsStateWithLifecycle()
     val activeTool by viewModel.activeTool.collectAsStateWithLifecycle()
@@ -84,11 +84,7 @@ fun OmniPdfApp(
     val selectedImages by viewModel.selectedImages.collectAsStateWithLifecycle()
     val imageConfig by viewModel.imageConfig.collectAsStateWithLifecycle()
 
-    // OCR states
-    val ocrImages by viewModel.ocrImages.collectAsStateWithLifecycle()
-    val ocrExtractedText by viewModel.ocrExtractedText.collectAsStateWithLifecycle()
-    val ocrDocumentTitle by viewModel.ocrDocumentTitle.collectAsStateWithLifecycle()
-    val isOcrScanning by viewModel.isOcrScanning.collectAsStateWithLifecycle()
+    // OCR states - removed in v1.8 (kept for alignment)
 
     // Text states
     val textTitle by viewModel.textTitle.collectAsStateWithLifecycle()
@@ -237,27 +233,14 @@ fun OmniPdfApp(
                             onAddImages = { uris -> viewModel.addImages(uris) },
                             onRemoveImage = { index -> viewModel.removeImage(index) },
                             onMoveImage = { from, to -> viewModel.moveImage(from, to) },
+                            onReplaceImage = { index, uri -> viewModel.replaceImage(index, uri) },
                             onClearImages = { viewModel.clearImages() },
                             onUpdateImageConfig = { updater -> viewModel.updateImageConfig(updater) },
                             onConvertImages = { viewModel.convertImagesToPdf() },
-                            onOcrScanShortcut = { viewModel.openTool(ConversionType.PHOTO_OCR_TO_PDF) },
 
-                            // Photo OCR
-                            ocrImages = ocrImages,
-                            ocrExtractedText = ocrExtractedText,
-                            ocrDocumentTitle = ocrDocumentTitle,
-                            isOcrScanning = isOcrScanning,
-                            onAddOcrImages = { uris -> viewModel.addOcrImages(uris) },
-                            onRemoveOcrImage = { index -> viewModel.removeOcrImage(index) },
-                            onClearOcrImages = { viewModel.clearOcrImages() },
-                            onOcrTextChange = { text -> viewModel.updateOcrText(text) },
-                            onOcrTitleChange = { title -> viewModel.updateOcrTitle(title) },
-                            onScanOcr = { viewModel.scanOcr() },
-                            onConvertOcrToPdf = { viewModel.convertOcrToPdf() },
-                            onSendToComposer = {
-                                viewModel.sendOcrToComposer()
-                                viewModel.openTool(ConversionType.TEXT_TO_PDF)
-                            },
+                            // Photo OCR was removed in v1.8 - no tool card, no
+                            // screen, no shortcut. The enum value is retained
+                            // only so saved history rows still deserialize.
 
                             // Text to PDF
                             textTitle = textTitle,
@@ -403,3 +386,4 @@ fun OmniPdfApp(
         }
     }
 }
+

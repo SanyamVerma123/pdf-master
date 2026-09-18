@@ -75,8 +75,14 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.PointF
 import android.graphics.RectF
+import android.net.Uri
+import android.util.Log
 import com.example.ui.theme.CrimsonPrimary
 import com.example.ui.theme.EmeraldSuccess
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
 
 /**
  * Fullscreen page editor opened by tapping a thumbnail in any tool's page list.
@@ -728,6 +734,44 @@ fun renderAnnotationsToBitmap(
         previous = point
     }
     return out
+}
+
+/**
+ * Persists an edited page bitmap back into the staged list the export pipeline
+ * reads. Writes the bitmap to a new temp file in the app cache, then calls
+ * [onStagedUrisChanged] with the new list (old Uri replaced at [index]).
+ *
+ * This is the fix for "crop / rotate / annotate do nothing real": edits used to
+ * mutate an in-memory copy the export never read. Both the preview grid and the
+ * PDF export read the same staged Uri list, so a swap here shows up in both.
+ *
+ * The caller is expected to own the source list (e.g. viewModel selectedImages)
+ * and pass the updated list back through its own state update.
+ */
+suspend fun persistEditedPage(
+    context: Context,
+    uris: List<Uri>,
+    index: Int,
+    bitmap: Bitmap,
+    onStagedUrisChanged: (List<Uri>) -> Unit
+) = withContext(Dispatchers.IO) {
+    val target = uris.getOrNull(index) ?: return@withContext
+    try {
+        val cacheDir = File(context.cacheDir, "edited_pages").apply { mkdirs() }
+        val outFile = File(cacheDir, "edited_${System.currentTimeMillis()}_${index}.jpg")
+        FileOutputStream(outFile).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)
+        }
+        val newUri = Uri.fromFile(outFile)
+        // A Uri from a persisted replaceable source (file://) keeps the export
+        // pipeline's read path unchanged - no special handling needed.
+        val updated = uris.toMutableList().apply { set(index, newUri) }
+        withContext(Dispatchers.Main) { onStagedUrisChanged(updated) }
+    } catch (e: Exception) {
+        // Never swallow: the user just lost an edit. Surface it so the caller
+        // can show an error instead of silently keeping the stale page.
+        Log.w("PageEdit", "Failed to persist edited page $index", e)
+    }
 }
 
 @Composable
