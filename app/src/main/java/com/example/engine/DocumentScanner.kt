@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.RectF
 import android.net.Uri
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
@@ -239,6 +240,37 @@ object DocumentScanner {
     suspend fun clearSessionScans(context: Context) = withContext(Dispatchers.IO) {
         scanDir(context).deleteRecursively()
         rawDir(context).deleteRecursively()
+    }
+
+    /**
+     * Crops a staged scan page to a normalized (0f..1f) rectangle and returns a
+     * new [ScanPage] pointing at the cropped output. The raw source frame is kept
+     * so filters can still be re-applied non-destructively afterwards. The
+     * selection is clamped on-page, so a selection dragged partly off the edge
+     * still produces a valid crop instead of an error.
+     */
+    suspend fun cropPage(context: Context, page: ScanPage, crop: RectF): ScanPage = withContext(Dispatchers.IO) {
+        val source = decodeBitmap(context, page.processedUri, maxDim = ScanQuality.HIGH.maxDim)
+            ?: throw IllegalStateException("Could not read the scanned page.")
+        try {
+            val left = (crop.left * source.width).toInt().coerceIn(0, source.width - 1)
+            val top = (crop.top * source.height).toInt().coerceIn(0, source.height - 1)
+            val right = (crop.right * source.width).toInt().coerceIn(left + 1, source.width)
+            val bottom = (crop.bottom * source.height).toInt().coerceIn(top + 1, source.height)
+            val cropped = Bitmap.createBitmap(source, left, top, right - left, bottom - top)
+            try {
+                val (outUri, _) = saveBitmap(context, cropped, prefix = "scan_crop")
+                page.copy(
+                    processedUri = outUri,
+                    width = cropped.width,
+                    height = cropped.height
+                )
+            } finally {
+                if (cropped !== source) cropped.recycleSafe()
+            }
+        } finally {
+            source.recycleSafe()
+        }
     }
 
     /**

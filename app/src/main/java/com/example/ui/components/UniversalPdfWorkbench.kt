@@ -1204,6 +1204,14 @@ fun UniversalPdfWorkbench(
                 },
                 onAnnotatePage = { index, strokes ->
                     pageAnnotations[index] = strokes
+                },
+                onCropPage = { index, crop ->
+                    pageBitmaps = pageBitmaps.toMutableList().apply {
+                        val bmp = getOrNull(index) ?: return@PageEditSheet
+                        // Crop the staged page in place; the preview grid and the
+                        // exported PDF both read from this list.
+                        set(index, cropBitmapNormalized(bmp, crop))
+                    }
                 }
             )
         }

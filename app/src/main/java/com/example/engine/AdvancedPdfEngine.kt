@@ -32,6 +32,8 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -43,6 +45,13 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 object AdvancedPdfEngine {
+
+    /**
+     * Grace period given to a WebView after it reports it is done, so that
+     * images, web fonts and async JavaScript layout have time to settle before
+     * the page is captured.
+     */
+    private const val SETTLE_DELAY_MS = 450L
 
     // ==========================================
     // 1. SPLIT PDF
@@ -755,47 +764,64 @@ object AdvancedPdfEngine {
         title: String = "Web Document",
         onProgress: (Int, Int) -> Unit
     ): File = withContext(Dispatchers.IO) {
-        // Renders the page in a real WebView off the main thread (WebView must
-        // be created and touched on the thread that has a Looper; we hand the
-        // captured bitmap bitmaps over to the PDF writer once laid out).
+        // Renders the page in a real WebView. WebView must be created and
+        // touched on a thread with a Looper, so the capture itself happens on
+        // the main thread; only the PDF writing happens here.
         val input = htmlOrUrl.trim()
         val isUrl = input.startsWith("http://") || input.startsWith("https://")
-        // Helpers receive the original string and branch on isUrl themselves.
-        val pageHtml = input
 
         // Width in CSS px for a 595pt page at ~96dpi (595 * 96 / 72).
         val contentW = 793
-        val height = withContext(Dispatchers.Main) {
+        // Height of one PDF page slice, in capture pixels.
+        val sliceH = 1122
+
+        // Pass 1: load the page once and capture the WHOLE thing into a single
+        // bitmap. Measuring and capturing in the same WebView (the old code
+        // re-loaded the page per slice) is what keeps the output faithful.
+        val full = withContext(Dispatchers.Main) {
             runCatching {
                 withTimeout(20_000) {
-                    renderWebToHeight(context, isUrl, pageHtml, contentW, onProgress)
+                    renderWebToBitmap(context, isUrl, input, contentW, onProgress)
                 }
-            }.getOrDefault(0)
+            }.getOrNull()
         }
-        if (height <= 0) throw IllegalStateException("Could not render the page. Check the link or your internet connection.")
+        if (full == null || full.height <= 0) {
+            throw IllegalStateException("Could not render the page. Check the link or your internet connection.")
+        }
 
+        // Pass 2: cut the full-page capture into A4-sized vertical slices. The
+        // last slice gets its own page-sized bitmap so no page is partly blank.
         val doc = PdfDocument()
-        val pages = (height / 1122) + 1
+        val pages = (full.height + sliceH - 1) / sliceH
         for (seg in 0 until pages) {
             onProgress(seg + 1, pages)
-            val bmp = withContext(Dispatchers.Main) {
-                runCatching {
-                    withTimeout(20_000) {
-                        renderWebToBitmap(context, isUrl, pageHtml, contentW, 1122, seg * 1122)
-                    }
-                }.getOrNull()
-            } ?: continue
+            val top = seg * sliceH
+            // The last slice can be shorter than one page; clamp so the width
+            // and height passed to the bitmap APIs are never negative.
+            val h = minOf(sliceH, (full.height - top).coerceAtLeast(0))
+            // Always draw from a slice that is exactly page-shaped; drawing a
+            // short slice directly would leave the rest of the page blank.
+            val bmp = if (h == sliceH && full.width == contentW) {
+                Bitmap.createBitmap(full, 0, top, contentW, sliceH)
+            } else {
+                Bitmap.createBitmap(contentW, sliceH, Bitmap.Config.ARGB_8888).also { slice ->
+                    val c = Canvas(slice)
+                    c.drawColor(Color.WHITE)
+                    c.drawBitmap(full, 0f, -top.toFloat(), Paint(Paint.FILTER_BITMAP_FLAG))
+                }
+            }
             val pageInfo = PdfDocument.PageInfo.Builder(595, 842, seg + 1).create()
             val page = doc.startPage(pageInfo)
             page.canvas.drawColor(Color.WHITE)
             // Scale the 793px-wide capture down to 595pt page width.
             val scale = 595f / bmp.width
-            val matrix = android.graphics.Matrix()
-            matrix.postScale(scale, scale)
-            page.canvas.drawBitmap(bmp, matrix, Paint(Paint.FILTER_BITMAP_FLAG))
+            val dst = RectF(0f, 0f, 595f, 842f)
+            val src = Rect(0, 0, bmp.width, h)
+            page.canvas.drawBitmap(bmp, src, dst, Paint(Paint.FILTER_BITMAP_FLAG))
             doc.finishPage(page)
             bmp.recycle()
         }
+        full.recycle()
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val outFile = File(context.filesDir, "html_export_$timestamp.pdf")
         FileOutputStream(outFile).use { doc.writeTo(it) }
@@ -804,85 +830,121 @@ object AdvancedPdfEngine {
     }
 
     /**
-     * Measures the full page height after the WebView finishes laying out.
-     */
-    private suspend fun renderWebToHeight(
-        context: Context,
-        isUrl: Boolean,
-        html: String?,
-        width: Int,
-        onProgress: (Int, Int) -> Unit
-    ): Int = suspendCancellableCoroutine { cont ->
-        val webView = WebView(context)
-        var finished = false
-        webView.layout(0, 0, width, 1)
-        webView.settings.javaScriptEnabled = true
-        webView.webViewClient = object : WebViewClient() {
-            override fun onPageFinished(view: WebView?, url: String?) {
-                if (finished) return
-                finished = true
-                view?.measure(
-                    View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
-                )
-                view?.layout(0, 0, view.measuredWidth, view.measuredHeight)
-                webView.destroy()
-                if (cont.isActive) cont.resume(view?.measuredHeight ?: 0)
-            }
-        }
-        val content = html ?: ""
-        if (isUrl) {
-            webView.loadUrl(content)
-        } else {
-            webView.loadDataWithBaseURL(null, content, "text/html", "UTF-8", null)
-        }
-        cont.invokeOnCancellation { webView.destroy() }
-    }
-
-    /**
-     * Draws [height]px of the page, starting at [topOffset], into a Bitmap.
+     * Renders the whole page (all of its content height, not just the visible
+     * viewport) into a single bitmap that is [width] px wide.
+     *
+     * The capture is only taken once the page reports it is really finished:
+     * [WebView.onPageSizeChanged] fires after the document's layout settles
+     * (including images, web fonts and async JavaScript growth), which the old
+     * [WebViewClient.onPageFinished]-only wait routinely missed - that is what
+     * made the exported page blank or clipped.
      */
     private suspend fun renderWebToBitmap(
         context: Context,
         isUrl: Boolean,
-        html: String?,
+        html: String,
         width: Int,
-        height: Int,
-        topOffset: Int
-    ): Bitmap? = suspendCancellableCoroutine { cont ->
+        onProgress: (Int, Int) -> Unit
+    ): Bitmap = suspendCancellableCoroutine { cont ->
         val webView = WebView(context)
-        var finished = false
-        webView.layout(0, 0, width, height)
+        var captured = false
+        var pendingResizes = 0
+        val handler = Handler(Looper.getMainLooper())
+
         webView.settings.javaScriptEnabled = true
+        // Wide enough that desktop layouts do not collapse to a mobile view.
+        webView.settings.useWideViewPort = true
+        webView.settings.loadWithOverviewMode = true
+        // Hardware layers keep none of the page, so the capture must use
+        // software drawing: a hardware-accelerated WebView drawn into a
+        // software bitmap captures nothing.
+        webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+
+        fun capture(now: Int) {
+            if (captured) return
+            // Re-measure with an UNSPECIFIED height so the WebView reports the
+            // full document height instead of the viewport it was given.
+            webView.measure(
+                View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            )
+            val w = webView.measuredWidth.coerceAtLeast(1)
+            val h = now.coerceAtLeast(webView.measuredHeight).coerceAtLeast(1)
+            webView.layout(0, 0, w, h)
+            val bmp = try {
+                Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            } catch (oom: OutOfMemoryError) {
+                destroyQuietly(webView)
+                if (cont.isActive) cont.resumeWithException(oom)
+                return
+            }
+            val canvas = Canvas(bmp)
+            canvas.drawColor(Color.WHITE)
+            webView.draw(canvas)
+            captured = true
+            handler.removeCallbacksAndMessages(null)
+            destroyQuietly(webView)
+            if (cont.isActive) cont.resume(bmp)
+        }
+
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
-                if (finished) return
-                finished = true
-                view?.measure(
-                    View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
-                )
-                val h = (view?.measuredHeight ?: 0).coerceAtLeast(topOffset + height)
-                view?.layout(0, 0, view.measuredWidth, h)
-                view?.scrollTo(0, topOffset)
-                val bmp = if (view != null) {
-                    Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
-                        val c = Canvas(it)
-                        c.translate(0f, -topOffset.toFloat())
-                        view.draw(c)
-                    }
-                } else null
-                webView.destroy()
-                if (cont.isActive) cont.resume(bmp)
+                if (captured || view == null) return
+                // onPageFinished can fire before the document's layout has
+                // settled; query the real content height and give the page a
+                // short grace period for late resizing before capturing.
+                val contentH = view.contentHeight
+                if (contentH > 0) {
+                    view.measure(
+                        View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                        View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+                    )
+                    val target = maxOf(contentH, view.measuredHeight)
+                    view.layout(0, 0, view.measuredWidth, target)
+                    handler.removeCallbacksAndMessages(null)
+                    handler.postDelayed({ capture(view.height) }, SETTLE_DELAY_MS)
+                }
+            }
+
+            override fun onScaleChanged(view: WebView?, oldScale: Float, newScale: Float) {
+                if (captured || view == null) return
+                // A scale change means the overview layout is still settling.
+                pendingResizes++
+                handler.removeCallbacksAndMessages(null)
+                handler.postDelayed({
+                    pendingResizes = 0
+                    capture(view.height)
+                }, SETTLE_DELAY_MS)
             }
         }
-        val content = html ?: ""
+
+        // Laid out with a zero-height viewport so every layout pass reports
+        // the true full content height rather than the visible window.
+        webView.layout(0, 0, width, 1)
         if (isUrl) {
-            webView.loadUrl(content)
+            webView.loadUrl(html)
         } else {
-            webView.loadDataWithBaseURL(null, content, "text/html", "UTF-8", null)
+            webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
         }
-        cont.invokeOnCancellation { webView.destroy() }
+
+        // Hard backstop: contentHeight/onScaleChanged can both stay silent
+        // (already-laid-out local HTML, or a page with no viewport meta tag),
+        // so never wait longer than the caller's withTimeout budget.
+        handler.postDelayed({
+            if (!captured && webView.contentHeight > 0) capture(webView.contentHeight)
+        }, SETTLE_DELAY_MS * 2)
+
+        cont.invokeOnCancellation {
+            handler.removeCallbacksAndMessages(null)
+            destroyQuietly(webView)
+        }
+    }
+
+    private fun destroyQuietly(webView: WebView) {
+        runCatching {
+            webView.stopLoading()
+            webView.destroy()
+        }
     }
 
     // ==========================================
@@ -1232,42 +1294,31 @@ object AdvancedPdfEngine {
     // ==========================================
     // 17. OCR PDF (make an existing PDF searchable)
     // ==========================================
+    /**
+     * OCR PDF (make an existing PDF searchable).
+     *
+     * The user wants the OUTPUT TO CONTAIN ONLY THE EXTRACTED TEXT, laid out
+     * like the original page - the scanned page IMAGE IS DROPPED. So this now
+     * delegates to [ocrPdfLayoutPreserving], which draws pure text at the
+     * coordinates ML Kit found it at: headings stay centred, body stays
+     * left-aligned, every line keeps its place and size. Reading order comes
+     * from [extractTextWithLayout], which walks ML Kit's blocks -> lines.
+     */
     suspend fun ocrPdf(
         context: Context,
         pdfUri: Uri,
         onProgress: (Int, Int) -> Unit
-    ): File = withContext(Dispatchers.IO) {
-        // Renders each page, runs on-device OCR on the render, and rebuilds the
-        // document with the recognized text as an invisible selectable layer
-        // over the page image plus a visible transcript page per source page.
-        val bitmaps = PdfEngine.renderAllPagesFromPdfUri(context, pdfUri)
-        if (bitmaps.isEmpty()) throw IllegalStateException("Could not read the PDF pages.")
-
-        val pages = bitmaps.mapIndexed { idx, bmp ->
-            onProgress(idx + 1, bitmaps.size)
-            val text = extractTextFromBitmap(bmp)
-            PdfEngine.OcrPagePublic(bmp, text.trim())
-        }
-
-        val config = TextPdfConfig(
-            title = "Searchable OCR Document",
-            fontSize = 12f,
-            lineSpacing = 1.3f,
-            margin = PageMargin.NORMAL,
-            showHeader = true,
-            showPageNumbers = true
-        )
-        PdfEngine.buildSearchableOcrPdf(
-            pages, config,
-            File(context.filesDir, "generated_pdfs").apply { mkdirs() }
-        ) { cur, tot -> onProgress(cur, tot) }
-    }
+    ): File = ocrPdfLayoutPreserving(context, pdfUri, onProgress)
 
     /**
      * Layout-preserving OCR. Rebuilds each page as pure text positioned at the
      * coordinates ML Kit actually found it: headings stay centred, body stays
      * left-aligned, every line keeps its place and size - a text photocopy of
      * the original page. The source page image is dropped.
+     *
+     * Lines come from [extractTextWithLayout], which walks ML Kit's text blocks
+     * and their lines in reading order, so multi-column and heading/body pages
+     * are reconstructed in the order a human reads them.
      */
     suspend fun ocrPdfLayoutPreserving(
         context: Context,

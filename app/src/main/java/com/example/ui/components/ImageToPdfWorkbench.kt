@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.graphics.Bitmap
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -637,7 +638,15 @@ fun ImageToPdfWorkbench(
                     pageBitmaps = pageBitmaps.toMutableList().apply { removeAt(index) }
                     editingPageIndex = null
                 },
-                onAnnotatePage = { _, _ -> }
+                onAnnotatePage = { _, _ -> },
+                onCropPage = { index, crop ->
+                    pageBitmaps = pageBitmaps.toMutableList().apply {
+                        val bmp = getOrNull(index) ?: return@PageEditSheet
+                        // Crop the staged bitmap in place so the result shows in
+                        // the preview grid and lands in the exported PDF.
+                        set(index, cropBitmapNormalized(bmp, crop))
+                    }
+                }
             )
         }
     }

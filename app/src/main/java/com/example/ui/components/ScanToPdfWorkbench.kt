@@ -405,7 +405,14 @@ fun ScanToPdfWorkbench(
                     editingPageIndex = null
                 }
             },
-            onAnnotatePage = { _, _ -> }
+            onAnnotatePage = { _, _ -> },
+            onCropPage = { index, crop ->
+                scanPages.getOrNull(index)?.let { page ->
+                    // Crop is applied to the source page in the ViewModel so the
+                    // compiled PDF and the thumbnail strip both pick it up.
+                    viewModel.cropScanPage(page, crop)
+                }
+            }
         )
     }
 }

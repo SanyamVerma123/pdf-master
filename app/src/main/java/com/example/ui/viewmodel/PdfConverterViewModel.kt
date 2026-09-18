@@ -11,6 +11,7 @@ import com.example.data.model.PdfRecord
 import com.example.data.model.ScanPage
 import com.example.data.repository.PdfRepository
 import com.example.engine.CompressionLevel
+import android.graphics.RectF
 import com.example.engine.DocumentScanner
 import com.example.engine.ImagePdfConfig
 import com.example.engine.ImageScaleMode
@@ -329,6 +330,29 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                 }
             } catch (e: Exception) {
                 _scannerError.value = e.localizedMessage ?: "Failed to rotate the page."
+            } finally {
+                _isScanProcessing.value = false
+            }
+        }
+    }
+
+    /**
+     * Crops a staged scan page to a normalized (0f..1f) rectangle. The crop runs
+     * through the scanner so the compiled PDF and the thumbnail strip both pick
+     * up the result, and the raw source frame is preserved for re-filtering.
+     */
+    fun cropScanPage(page: ScanPage, crop: RectF) {
+        viewModelScope.launch {
+            _isScanProcessing.value = true
+            try {
+                val cropped = DocumentScanner.cropPage(getApplication(), page, crop)
+                _scanPages.update { current ->
+                    current.map { existing ->
+                        if (existing.id == page.id) cropped else existing
+                    }
+                }
+            } catch (e: Exception) {
+                _scannerError.value = e.localizedMessage ?: "Failed to crop the page."
             } finally {
                 _isScanProcessing.value = false
             }
