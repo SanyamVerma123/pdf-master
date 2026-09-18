@@ -290,8 +290,9 @@ fun PageEditSheet(
                         val target = currentPage
                         val raw = cropRect
                         // Guard against a selection made for a different page.
-                        if (raw == null || cropPageKey.width != page.width.toFloat() ||
-                            cropPageKey.height != page.height.toFloat()
+                        // RectF exposes width()/height() as methods, not properties.
+                        if (raw == null || cropPageKey.width() != page.width.toFloat() ||
+                            cropPageKey.height() != page.height.toFloat()
                         ) return@applyCrop
                         val normalized = cropRectToNormalized(
                             rect = raw,
