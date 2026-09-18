@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,8 +30,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material3.Button
@@ -232,10 +235,10 @@ fun PageEditSheet(
                         )
                         // v1.9: the edit-tool strip. Tapping a tool arms it and disarms
                         // crop; tapping the armed tool again disarms it.
-                        EditToolButton(Icons.Default.TextFields, "Add text", EditTool.Text, editTool) { editTool = if (it == editTool) EditTool.None else it; if (editTool != EditTool.None) { cropMode = false; cropRect = null } }
+                        EditToolButton(Icons.Default.Title, "Add text", EditTool.Text, editTool) { editTool = if (it == editTool) EditTool.None else it; if (editTool != EditTool.None) { cropMode = false; cropRect = null } }
                         EditToolButton(Icons.Default.Brush, "Draw", EditTool.Pen, editTool) { editTool = if (it == editTool) EditTool.None else it; if (editTool != EditTool.None) { cropMode = false; cropRect = null } }
-                        EditToolButton(Icons.Default.Draw, "Sign", EditTool.Sign, editTool) { editTool = if (it == editTool) EditTool.None else it; if (editTool != EditTool.None) { cropMode = false; cropRect = null } }
-                        EditToolButton(Icons.Default.AutoFixHigh, "Erase", EditTool.Eraser, editTool) { editTool = if (it == editTool) EditTool.None else it; if (editTool != EditTool.None) { cropMode = false; cropRect = null } }
+                        EditToolButton(Icons.Default.Create, "Sign", EditTool.Sign, editTool) { editTool = if (it == editTool) EditTool.None else it; if (editTool != EditTool.None) { cropMode = false; cropRect = null } }
+                        EditToolButton(Icons.Default.Delete, "Erase", EditTool.Eraser, editTool) { editTool = if (it == editTool) EditTool.None else it; if (editTool != EditTool.None) { cropMode = false; cropRect = null } }
                         CircleToolButton(
                             icon = Icons.Default.Delete,
                             description = "Remove this page",
@@ -308,7 +311,7 @@ fun PageEditSheet(
                                     zoom = zoom,
                                     panX = panX,
                                     panY = panY
-                                ),
+                                ).map { PointF(it.x, it.y) },
                                 color = s.color,
                                 widthPx = s.widthPx / fitScale,  // scale pen width to page space
                                 isSignature = s.isSignature
