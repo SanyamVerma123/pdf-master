@@ -153,8 +153,8 @@ fun UniversalPdfWorkbench(
     var watermarkGridPos by remember { mutableIntStateOf(4) } // 4 = Center
 
     // Compress specific
-    var compressDpi by remember { mutableFloatStateOf(150f) }
-    var compressQuality by remember { mutableFloatStateOf(80f) }
+    var compressDpi by remember { mutableFloatStateOf(110f) }
+    var compressQuality by remember { mutableFloatStateOf(60f) }
     var compressGrayscale by remember { mutableStateOf(false) }
 
     // Split specific

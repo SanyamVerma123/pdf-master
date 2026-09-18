@@ -256,8 +256,6 @@ object AdvancedPdfEngine {
             val dictEnd = text.indexOf("stream", o.payloadStart)
             if (dictEnd < 0 || dictEnd >= o.endObj) return@forEachIndexed
             val dictText = text.substring(o.payloadStart, dictEnd)
-            // Already-JPEG images are as small as they get; re-encoding only loses quality.
-            if (dictText.contains("/DCTDecode")) return@forEachIndexed
 
             var dataStart = dictEnd + "stream".length
             if (dataStart < raw.size && raw[dataStart] == 0x0D.toByte()) dataStart++
@@ -269,20 +267,46 @@ object AdvancedPdfEngine {
             if (dataEnd - 1 >= dataStart && raw[dataEnd - 1] == 0x0D.toByte()) dataEnd--
 
             val encoded = raw.sliceArray(dataStart until dataEnd)
-            val decoded = decodeImageStream(dictText, encoded) ?: return@forEachIndexed
-            val bitmap = BitmapFactory.decodeByteArray(decoded, 0, decoded.size) ?: return@forEachIndexed
-            val target = if (isGrayscale) toGrayscale(bitmap) else bitmap
+            // Decode whatever the current filter is. A JPEG image is decoded straight from
+            // its DCT bytes; Flate (and anything else BitmapFactory understands) is inflated
+            // first. Re-encoding an already-JPEG image at a LOWER quality than it was made
+            // with is a real size win - that is what the "150 DPI / already optimized"
+            // report was hitting, because those images were /DCTDecode and got skipped.
+            val bitmap = if (dictText.contains("/DCTDecode")) {
+                BitmapFactory.decodeByteArray(encoded, 0, encoded.size)
+            } else {
+                val decoded = decodeImageStream(dictText, encoded) ?: return@forEachIndexed
+                BitmapFactory.decodeByteArray(decoded, 0, decoded.size)
+            } ?: return@forEachIndexed
+
+            // Cap how many pixels we keep. A photo PDF scanned at high resolution carries
+            // far more pixels than any screen needs; shrinking to the budget is where most
+            // of the saving comes from, and it applies to both filters.
+            val maxSide = 2200
+            var target = bitmap
+            if (bitmap.width > maxSide || bitmap.height > maxSide) {
+                val scale = maxSide.toFloat() / maxOf(bitmap.width, bitmap.height)
+                target = Bitmap.createScaledBitmap(
+                    bitmap, (bitmap.width * scale).toInt().coerceAtLeast(1),
+                    (bitmap.height * scale).toInt().coerceAtLeast(1), true
+                )
+                if (target != bitmap) bitmap.recycle()
+            }
+            val finalTarget = if (isGrayscale) toGrayscale(target) else target
 
             val jpgStream = ByteArrayOutputStream()
-            target.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(10, 100), jpgStream)
+            finalTarget.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(10, 100), jpgStream)
             val jpegBytes = jpgStream.toByteArray()
-            target.recycle()
+            finalTarget.recycle()
             if (jpegBytes.size >= encoded.size) return@forEachIndexed  // never grow an image
 
-            val newDict = dictText
+            var newDict = dictText
                 .replace(Regex("/Filter\\s*/FlateDecode"), "/Filter /DCTDecode")
                 .replace(Regex("/Filter\\s*\\[[^\\]]*\\]"), "/Filter /DCTDecode")
                 .replace(Regex("/DecodeParms\\s*[^/]+"), "")  // pairs with the old filter
+            // A rescaled image must report its new dimensions, or the page draws it clipped.
+            newDict = newDict.replace(Regex("/Width\\s+\\d+"), "/Width ${finalTarget.width}")
+            newDict = newDict.replace(Regex("/Height\\s+\\d+"), "/Height ${finalTarget.height}")
             // /Length must describe the new payload exactly, or the reader mis-splits the stream.
             val withLength = if (newDict.contains("/Length")) {
                 newDict.replace(Regex("/Length\\s+\\d+"), "/Length ${jpegBytes.size}")

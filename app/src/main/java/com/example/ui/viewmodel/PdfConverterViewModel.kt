@@ -1169,8 +1169,9 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                         // Make it clear to the user instead of looking like a bug.
                         if (compressed.length() >= before && before > 0L) {
                             _conversionState.value = ConversionUiState.Error(
-                                "This PDF is already optimized - it cannot be made smaller without " +
-                                    "losing quality. Vector/text pages do not shrink when rasterized."
+                                "This PDF is already optimized - every page image was re-encoded " +
+                                    "at the chosen quality and still could not beat the original size. " +
+                                    "Try the EXTREME preset or a lower DPI."
                             )
                             return@launch
                         }
