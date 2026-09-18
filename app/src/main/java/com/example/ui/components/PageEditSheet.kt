@@ -291,23 +291,26 @@ fun PageEditSheet(
                         val raw = cropRect
                         // Guard against a selection made for a different page.
                         // RectF exposes width()/height() as methods, not properties.
-                        if (raw == null || cropPageKey.width() != page.width.toFloat() ||
-                            cropPageKey.height() != page.height.toFloat()
-                        ) return@applyCrop
-                        val normalized = cropRectToNormalized(
-                            rect = raw,
-                            canvasWpx = canvasWpx,
-                            canvasHpx = canvasHpx,
-                            imageW = page.width,
-                            imageH = page.height,
-                            fitScale = fitScale,
-                            offsetX = offsetX,
-                            offsetY = offsetY,
-                            zoom = zoom,
-                            panX = panX,
-                            panY = panY
-                        )
-                        normalized?.let { onCropPage(target, it) }
+                        // Wrapped in a scope so an early exit needs no label.
+                        raw?.takeIf {
+                            cropPageKey.width() == page.width.toFloat() &&
+                                cropPageKey.height() == page.height.toFloat()
+                        }?.let { valid ->
+                            val normalized = cropRectToNormalized(
+                                rect = valid,
+                                canvasWpx = canvasWpx,
+                                canvasHpx = canvasHpx,
+                                imageW = page.width,
+                                imageH = page.height,
+                                fitScale = fitScale,
+                                offsetX = offsetX,
+                                offsetY = offsetY,
+                                zoom = zoom,
+                                panX = panX,
+                                panY = panY
+                            )
+                            normalized?.let { onCropPage(target, it) }
+                        }
                         cropRect = null
                         cropMode = false
                     }
