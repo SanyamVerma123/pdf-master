@@ -57,8 +57,6 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Stroke
-import androidx.compose.ui.graphics.StrokeStyle
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -76,8 +74,6 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.PointF
 import android.graphics.RectF
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.Size
 import com.example.ui.theme.CrimsonPrimary
 import com.example.ui.theme.EmeraldSuccess
 
@@ -308,11 +304,10 @@ fun PageEditSheet(
                             panX = panX,
                             panY = panY
                         )
+                        normalized?.let { onCropPage(target, it) }
                         cropRect = null
                         cropMode = false
-                        normalized?.let { onCropPage(target, it) }
                     }
-
                     // Both the page image and the stroke overlay receive the
                     // same transform so strokes stay glued to the page while
                     // zooming and panning.
@@ -380,10 +375,7 @@ fun PageEditSheet(
                                 color = CrimsonPrimary,
                                 topLeft = selection.topLeft,
                                 size = selection.size,
-                                style = Stroke(
-                                    width = 3.dp.toPx(),
-                                    strokeStyle = StrokeStyle()
-                                )
+                                style = Stroke(width = 3.dp.toPx())
                             )
                             // Corner handles, so the region reads as an
                             // adjustable selection rather than a marquee.
