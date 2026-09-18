@@ -132,7 +132,12 @@ internal object PdfCrypto {
 
     private fun parseObjects(raw: ByteArray): List<ObjInfo> {
         val text = String(raw, Charsets.ISO_8859_1)
-        val objRegex = Regex("(?m)^(\\d+)\\s+(\\d+)\\s+obj\\b")
+        // Not anchored to a line start: some writers put a space (or no newline at
+        // all) between one "endobj" and the next object header, and CR-only files
+        // confuse the multiline flag. Matching on the object keyword itself is
+        // strictly more permissive and cannot misfire on payload content, because
+        // a body never legitimately contains "N M obj" outside a header.
+        val objRegex = Regex("(?s)\\b(\\d+)\\s+(\\d+)\\s+obj\\b")
         val objs = mutableListOf<ObjInfo>()
         for (m in objRegex.findAll(text)) {
             val payloadStart = m.range.last + 1
@@ -424,8 +429,16 @@ internal object PdfCrypto {
             ?: throw IllegalStateException("This PDF is not password protected.")
         val encNum = encRef.groupValues[1].toInt()
 
-        val encObjMatch = Regex("(?m)^${encNum}\\s+0\\s+obj\\b").find(text)
-            ?: throw IllegalStateException("Could not locate the encryption dictionary.")
+        // The object need not sit exactly at column 0: some writers indent the
+        // header or place it after another "endobj" with only a space between.
+        // Tolerate leading whitespace, but stay line-anchored so a literal
+        // "3 0 obj" inside a stream payload can never be mistaken for a header.
+        val encObjMatch = Regex("(?m)^[ \\t]*${encNum}\\s+0\\s+obj\\b").find(text)
+            ?: throw IllegalStateException(
+                "Could not locate the encryption dictionary. " +
+                    "This file may use compressed object streams, which this " +
+                    "unlock tool does not yet support."
+            )
         val encDictEnd = findKw(raw, "endobj", encObjMatch.range.last + 1)
         val encText = text.substring(encObjMatch.range.last + 1, encDictEnd)
 

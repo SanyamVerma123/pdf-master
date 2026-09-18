@@ -150,13 +150,63 @@ object AdvancedPdfEngine {
     suspend fun compressPdf(
         context: Context,
         pdfUri: Uri,
-        dpi: Int = 150,
-        quality: Int = 80,
+        dpi: Int = 110,
+        quality: Int = 60,
         isGrayscale: Boolean = false,
         onProgress: (Int, Int) -> Unit
     ): File = withContext(Dispatchers.IO) {
         val tempPdf = PdfEngine.copyUriToTemp(context, pdfUri) ?: throw IllegalStateException("Failed to read PDF")
         val originalSize = tempPdf.length()
+
+        // Escalation ladder (v1.8.2 bug report): a single fixed DPI/quality pass
+        // reliably came out LARGER than the source for photo PDFs, because the
+        // re-encoded raster carries more pixels than the original compressed
+        // images. Try the requested settings, then progressively more aggressive
+        // ones, and only ship a pass that actually beat the original size.
+        val attempts = listOf(
+            dpi to quality,
+            (dpi * 0.75f).toInt().coerceIn(50, dpi) to (quality * 0.8f).toInt().coerceIn(20, quality),
+            72 to 40
+        ).distinct()
+
+        var lastError: Exception? = null
+        for ((attemptDpi, attemptQuality) in attempts) {
+            try {
+                val out = runCompressPass(
+                    context, tempPdf, originalSize, attemptDpi, attemptQuality, isGrayscale, onProgress
+                )
+                if (out != null) {
+                    tempPdf.delete()
+                    return@withContext out
+                }
+            } catch (e: Exception) {
+                lastError = e
+            }
+        }
+
+        // Every pass failed or produced a bigger file. Ship the original with the
+        // note the UI turns into the "already optimized" message - never a
+        // blurrier, larger file.
+        val fallback = File(context.filesDir, "uncompressed_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.pdf")
+        tempPdf.copyTo(fallback, overwrite = true)
+        tempPdf.delete()
+        if (fallback.length() == originalSize) fallback
+        else throw lastError ?: IllegalStateException("Compression failed to produce a smaller file.")
+    }
+
+    /**
+     * One rasterize-and-rebuild pass. Returns the new file only when it is
+     * strictly smaller than [originalSize]; null otherwise (files cleaned up).
+     */
+    private fun runCompressPass(
+        context: Context,
+        tempPdf: File,
+        originalSize: Long,
+        dpi: Int,
+        quality: Int,
+        isGrayscale: Boolean,
+        onProgress: (Int, Int) -> Unit
+    ): File? {
         val pfd = ParcelFileDescriptor.open(tempPdf, ParcelFileDescriptor.MODE_READ_ONLY)
         val renderer = PdfRenderer(pfd)
         val pageCount = renderer.pageCount
@@ -205,18 +255,14 @@ object AdvancedPdfEngine {
         FileOutputStream(outFile).use { doc.writeTo(it) }
         doc.close()
 
-        // The whole point of compression is a smaller file. If rasterizing made
-        // it bigger (typical for vector/text PDFs), do NOT ship a blurrier,
-        // larger file: return the original untouched.
-        if (outFile.length() >= originalSize) {
-            outFile.delete()
-            val fallback = File(context.filesDir, "uncompressed_$timestamp.pdf")
-            tempPdf.copyTo(fallback, overwrite = true)
-            tempPdf.delete()
-            fallback
-        } else {
-            tempPdf.delete()
+        // The whole point of compression is a smaller file. If this pass did not
+        // achieve one, throw it away and let the caller try a more aggressive pass
+        // (or fall back to the original with an explanatory note).
+        return if (outFile.length() in 1 until originalSize) {
             outFile
+        } else {
+            outFile.delete()
+            null
         }
     }
 

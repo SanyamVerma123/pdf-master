@@ -686,9 +686,16 @@ fun UniversalPdfWorkbench(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     listOf(
-                                        Triple("EXTREME", 72f, 50f),
-                                        Triple("RECOMMENDED", 150f, 80f),
-                                        Triple("LESS", 300f, 95f)
+                                        // Reworked presets after the v1.8.1 bug report:
+                                        // RECOMMENDED at 150 DPI / q80 routinely came out
+                                        // LARGER than the source (a photo PDF is already
+                                        // compressed JPEG; re-encoding a full ARGB raster
+                                        // adds pixels that were never there). The presets
+                                        // now target real savings, and compressPdf falls
+                                        // back to a more aggressive pass before giving up.
+                                        Triple("EXTREME", 72f, 40f),
+                                        Triple("RECOMMENDED", 110f, 60f),
+                                        Triple("LESS", 200f, 85f)
                                     ).forEach { (label, dpi, q) ->
                                         FilterChip(
                                             selected = compressDpi == dpi,
