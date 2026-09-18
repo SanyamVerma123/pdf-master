@@ -112,15 +112,26 @@ fun ImageToPdfWorkbench(
     }
 
     // CAMERA: capture a single photo straight into the staged page list. The
-    // contract takes a temp Uri we own, so the result is a real file Uri the
-    // export pipeline can read (no ContentResolver takeable-permission needed).
+    // contract takes a temp Uri we own in app-private cache, so the result is a
+    // real file Uri the export pipeline can read directly (no ContentResolver
+    // pick-permission needed, no stale-stream problem).
     var cameraOutUri by remember { mutableStateOf<Uri?>(null) }
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { saved ->
         val uri = cameraOutUri
-        if (saved && uri != null) onAddImages(listOf(uri))
         cameraOutUri = null
+        // Some stock cameras report success but write nothing - or the user
+        // backed out. Either way, never stage a Uri with no image behind it,
+        // because that is what produces a zero-page "corrupted" PDF.
+        if (saved && uri != null) {
+            scope.launch(Dispatchers.IO) {
+                val ok = runCatching {
+                    context.contentResolver.openInputStream(uri)?.use { it.readBytes()?.isNotEmpty() == true }
+                }.getOrNull() == true
+                if (ok) onAddImages(listOf(uri))
+            }
+        }
     }
 
     var showAdvancedSettings by remember { mutableStateOf(false) }
@@ -285,7 +296,7 @@ fun ImageToPdfWorkbench(
                         )
                     )
                     Text(
-                        text = "JPG • PNG • WEBP • HEIC (Instant compilation)",
+                        text = "JPG • PNG • WEBP • HEIC • AVIF • ANY FORMAT",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontFamily = FontFamily.Monospace,
                             fontSize = 10.sp,

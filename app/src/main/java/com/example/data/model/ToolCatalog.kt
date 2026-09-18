@@ -155,9 +155,9 @@ object ToolCatalog {
         ),
         ToolItem(
             type = ConversionType.IMAGE_TO_PDF,
-            title = "JPG to PDF",
-            subtitle = "PHOTOS TO PDF",
-            description = "Convert JPG/PNG images to PDF in seconds. Easily adjust orientation, fit modes, margins, and page sizes.",
+            title = "Image to PDF",
+            subtitle = "ANY FORMAT TO PDF",
+            description = "Convert JPG, PNG, WEBP, HEIC or any image format to PDF in seconds. Easily adjust orientation, fit modes, margins, and page sizes.",
             category = ToolCategory.CONVERT,
             badge = "POPULAR",
             accentColor = CrimsonPrimary,

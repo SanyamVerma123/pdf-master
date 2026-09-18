@@ -342,7 +342,6 @@ private fun PopularToolsRow(
             ConversionType.IMAGE_TO_PDF,
             ConversionType.EDIT_PDF,
             ConversionType.PDF_TO_IMAGES,
-            ConversionType.OCR_PDF,
             ConversionType.SCAN_TO_PDF,
             ConversionType.SPLIT_PDF
         ).mapNotNull { type -> ToolCatalog.tools.find { it.type == type } }

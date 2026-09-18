@@ -49,7 +49,7 @@ data class ToolDefinition(
 val AVAILABLE_TOOLS = listOf(
     ToolDefinition(
         type = ConversionType.IMAGE_TO_PDF,
-        label = "Images to PDF",
+        label = "Image to PDF",
         subtitle = "Photo / Gallery",
         icon = Icons.Outlined.PhotoLibrary
     ),

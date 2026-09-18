@@ -519,7 +519,15 @@ object DocumentScanner {
         }
         if (maxMag < 40) return null
 
-        val threshold = (maxMag * 0.32f).toInt()
+        // Adaptive threshold instead of a fixed fraction of the max gradient: a
+        // soft-edged photo under uneven light has a huge maxMag from one bright
+        // reflection, which pushed the old 0.32*max threshold so high that the
+        // actual page edges fell below it and detection silently bailed.
+        // Use the strong-edge percentile so the threshold tracks real content.
+        val sorted = mag.toMutableList().apply { sort() }
+        val strongIdx = (sorted.size * 0.90f).toInt().coerceIn(0, sorted.lastIndex)
+        val percentile = sorted[strongIdx]
+        val threshold = maxOf((maxMag * 0.25f).toInt(), percentile, 60)
         val sx = sw.toFloat() / w
         val sy = sh.toFloat() / h
 
@@ -550,9 +558,12 @@ object DocumentScanner {
         if (edgeCount < 16) return null
 
         // Reject degenerate quads (document does not occupy enough of the frame).
+        // Lowered from 0.18 to 0.10: a page photographed at an angle (perspective)
+        // occupies far less of the frame than a head-on shot, and the old cutoff
+        // rejected most real captures.
         val quadArea = quadrilateralArea(tl, tr, br, bl)
         val frameArea = (sw * sh).toFloat()
-        if (quadArea < frameArea * 0.18f) return null
+        if (quadArea < frameArea * 0.10f) return null
 
         // Scale corners back to full-resolution coordinates.
         val fullTl = floatArrayOf(tl[0] / sx, tl[1] / sy)
@@ -650,7 +661,10 @@ object DocumentScanner {
     // ------------------------------------------------------------------
 
     private const val DESKEW_MAX_DIM = 320
-    private const val DESKEW_RANGE_DEG = 12
+    // Extended range: a phone held "vertically" is rarely within 12 degrees, and a
+    // page photographed from a low angle skews by 20-30 degrees. Sweep wide enough
+    // to catch real-world tilt, then refine.
+    private const val DESKEW_RANGE_DEG = 30
 
     /**
      * Estimates the page skew from horizontal projection profiles of the ink and
@@ -704,18 +718,18 @@ object DocumentScanner {
         var step = 0.5f
         while (step > 0.05f) {
             var improved = false
-            for (delta in listOf(step, -step)) {
-                val candidate = bestAngle + delta
-                if (abs(candidate) > DESKEW_RANGE_DEG + 2f) continue
-                val score = projectionScore(inkPoints, sw, sh, cx, cy, candidate)
+            // Probe around the CURRENT best estimate, not the coarse winner, so
+            // the refinement actually converges instead of re-testing one spot.
+            for (delta in listOf(refined + step, refined - step)) {
+                if (abs(delta) > DESKEW_RANGE_DEG + 2f) continue
+                val score = projectionScore(inkPoints, sw, sh, cx, cy, delta)
                 if (score > refinedScore) {
                     refinedScore = score
-                    refined = candidate
+                    refined = delta
                     improved = true
                 }
             }
             if (!improved) step /= 2f
-            bestAngle = refined
         }
 
         if (abs(refined) < 0.12f) return null

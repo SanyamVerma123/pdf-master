@@ -573,7 +573,9 @@ class PdfConverterViewModel(application: Application) : AndroidViewModel(applica
                 // empty file - that is what produced "unable to open / corrupted".
                 if (!file.exists() || file.length() == 0L) {
                     _conversionState.value = ConversionUiState.Error(
-                        "No page could be rendered from the selected images. The files may be unreadable or in an unsupported format."
+                        "None of the ${uris.size} selected image(s) could be decoded. " +
+                            "The files may be unreadable, or the app may not have permission to read them. " +
+                            "Try removing and re-adding the images."
                     )
                     return@launch
                 }

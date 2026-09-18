@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Rect
@@ -12,6 +13,7 @@ import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.text.Layout
 import android.text.StaticLayout
@@ -19,10 +21,12 @@ import android.text.TextPaint
 import android.media.ExifInterface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -686,43 +690,98 @@ object PdfEngine {
 
     // Helper functions
 
+    /**
+     * Decodes any image the platform can read - JPG, PNG, WEBP, HEIC/HEIF, AVIF,
+     * BMP, GIF - into a bitmap no larger than [maxDim].
+     *
+     * The old implementation opened the stream twice and called
+     * `BitmapFactory.decodeStream`, which returns NULL (no exception) for HEIF,
+     * some progressive JPEGs and odd color profiles. That silent null is exactly
+     * what produced "No page could be rendered from the selected images." This
+     * version decodes into a byte buffer first, then falls back to
+     * [android.graphics.ImageDecoder] (API 28+) which handles every modern
+     * format, and only then to BitmapFactory.
+     */
     private fun loadAndProcessBitmap(context: Context, uri: Uri, compression: CompressionLevel): Bitmap? {
-        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        context.contentResolver.openInputStream(uri)?.use {
-            BitmapFactory.decodeStream(it, null, options)
+        val maxDim = compression.maxDim
+
+        // Read the whole file into memory once. This is the important part:
+        // a ContentResolver stream for a persisted pick-permission Uri can be
+        // consumed only once, and HEIF files need random access anyway.
+        val rawBytes = try {
+            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        } catch (e: Exception) {
+            null
         } ?: return null
 
+        // Pass 1: bounds only, so sampleSize is known before the real decode.
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
         var sampleSize = 1
-        while (options.outWidth / sampleSize > compression.maxDim || options.outHeight / sampleSize > compression.maxDim) {
+        while (
+            bounds.outWidth / sampleSize > maxDim ||
+            bounds.outHeight / sampleSize > maxDim
+        ) {
             sampleSize *= 2
         }
 
-        val decodeOptions = BitmapFactory.Options().apply {
-            inSampleSize = sampleSize
-            inPreferredConfig = Bitmap.Config.ARGB_8888
+        // Pass 2: prefer ImageDecoder on API 28+ (HEIC/HEIF/AVIF + better error
+        // reporting); fall back to BitmapFactory on older devices.
+        var bitmap: Bitmap? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                val source = ImageDecoder.createSource(ByteBuffer.wrap(rawBytes))
+                ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                    if (info.size.width > maxDim || info.size.height > maxDim) {
+                        decoder.setTargetSampleSize(sampleSize.coerceAtLeast(1))
+                    }
+                }
+            } catch (e: Exception) {
+                null
+            }
+        } else null
+
+        if (bitmap == null) {
+            bitmap = try {
+                BitmapFactory.decodeByteArray(
+                    rawBytes, 0, rawBytes.size,
+                    BitmapFactory.Options().apply {
+                        inSampleSize = sampleSize.coerceAtLeast(1)
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                    }
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }
+        if (bitmap == null) return null
+
+        // ImageDecoder can hand back a HARDWARE bitmap, which cannot be drawn into
+        // a PdfDocument canvas or re-encoded. Force it to a software copy once.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && bitmap.config == Bitmap.Config.HARDWARE) {
+            val software = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+            bitmap.recycle()
+            bitmap = software
         }
 
-        var bitmap = context.contentResolver.openInputStream(uri)?.use {
-            BitmapFactory.decodeStream(it, null, decodeOptions)
-        } ?: return null
-
-        // Check EXIF rotation
+        // Check EXIF rotation (gallery photos carry it; camera shots already
+        // applied it, but re-applying an identity rotation is harmless).
         try {
-            context.contentResolver.openInputStream(uri)?.use { stream ->
-                val exif = ExifInterface(stream)
-                val orientation = exif.getAttributeInt(
-                    ExifInterface.TAG_ORIENTATION,
-                    ExifInterface.ORIENTATION_NORMAL
-                )
-                val rotationAngle = when (orientation) {
-                    ExifInterface.ORIENTATION_ROTATE_90 -> 90f
-                    ExifInterface.ORIENTATION_ROTATE_180 -> 180f
-                    ExifInterface.ORIENTATION_ROTATE_270 -> 270f
-                    else -> 0f
-                }
-                if (rotationAngle != 0f) {
-                    val matrix = android.graphics.Matrix().apply { postRotate(rotationAngle) }
-                    val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            val orientation = ExifInterface(ByteArrayInputStream(rawBytes)).getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL
+            )
+            val rotationAngle = when (orientation) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> 0f
+            }
+            if (rotationAngle != 0f) {
+                val matrix = android.graphics.Matrix().apply { postRotate(rotationAngle) }
+                val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                if (rotated !== bitmap) {
                     bitmap.recycle()
                     bitmap = rotated
                 }
