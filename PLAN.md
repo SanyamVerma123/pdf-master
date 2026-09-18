@@ -9,60 +9,64 @@ CI: GitHub Actions, `.github/workflows/build.yml`, ~3.5 min per build.
 **Current green build: `96423aa` → run #43 → release `omnipdf-43` → v1.7 APK (23,722,206 B)**
 Delivered artifact: `D:\hermes-workspace\OmniPDF-v1.7-debug.apk` — sent to Telegram, receipt confirmed.
 
-**IN PROGRESS — v1.8 iteration (user's v1.7 test report). Plan approved by user
-2026-09-16. Do NOT start from §7; work this list.**
+**SHIPPED — v1.8, CI run #45 (commit 6d5c8a3, release omnipdf-45), 2026-09-18.
+APK: `D:\hermes-workspace\OmniPDF-v1.8-debug.apk` (22,891,408 B) — sent to Telegram.
+Light mode is the default (added by user request mid-iteration).**
 
-## 0. v1.8 TODO (user-reported, ordered)
+## 0. v1.8 TODO (user-reported, ordered) — DONE
 
 ### P0 — BUGS
-- [ ] 1. **Crop does nothing real.** `PageEditSheet` crops an in-memory bitmap
-      copy (`pageBitmaps`) that export never reads. Fix: persist edited pages
-      to temp files and swap the staged `Uri` list in ImageToPdfWorkbench,
-      UniversalPdfWorkbench, ScanToPdfWorkbench. Preview AND export reflect it.
-- [ ] 2. **JPG→PDF: corrupted/empty output + no camera.** `pageBitmaps` (edited
-      copy) ≠ `selectedImages` (export source) → export renders the wrong pages.
-      Fix: persist edits to the source Uri list (item 1), add zero-page guard
-      (fail loudly, never emit an empty file), add a CAMERA button beside the
-      photo picker in ImageToPdfWorkbench.
-- [ ] 3. **Long-press drag reorder missing.** `ReorderablePdfList` has NO drag
-      gesture — handle is a click that expands arrow controls. Fix: implement
-      long-press drag (`detectDragGesturesAfterLongPress` on LazyColumn) with
-      live reorder; keep arrows as fallback.
-- [ ] 4. **Unlock fails: "credential not found".** `PdfCrypto.decrypt` only
-      implements `/V 2 /R 3` RC4, key hardcoded to 5 bytes (40-bit). Modern
-      AES-128/256 PDFs fail. Fix: parse `/V`/`/R`/`/Length`, support AES-128
-      (`/V 4 /R 4`) and AES-256 (`/V 5 /R 5`) via `javax.crypto`; clear error
-      for truly unsupported files. Verified against pypdf/pikepdf.
-- [ ] 5. **Compress makes files bigger + blurry.** Rasterizes vector text pages
-      to low-DPI JPEG — text becomes a blurry photo that's LARGER than the
-      original. Fix: never ship a bigger file (compare output size to original;
-      return the original untouched + "already optimized" note); higher re-render
-      DPI so text stays sharp.
+- [x] 1. **Crop does nothing real.** Fixed: `PageEditSheet.persistEditedPage()` writes
+      the edited bitmap to `cacheDir/edited_pages/*.jpg` and swaps the staged `Uri`
+      (VM `replaceImage`), so preview AND export read the same list. **Runtime
+      behavior not device-tested** (no local emulator) — verify on install.
+- [x] 2. **JPG→PDF: corrupted/empty output + no camera.** Same Uri-swap root cause as
+      item 1; zero-page guard now fails loudly ("Please select at least one image.")
+      instead of emitting an unopenable file; CAMERA button added to
+      `ImageToPdfWorkbench` next to the photo picker.
+- [x] 3. **Long-press drag reorder missing.** `ReorderablePdfList` rewritten to
+      LazyColumn + `detectDragGesturesAfterLongPress` with live `onMove`; arrow
+      controls retained as fallback. Compiles; not device-tested.
+- [x] 4. **Unlock fails: "credential not found".** `PdfCrypto` now parses `/V`/`/R`/
+      `/Length`, derives the correct RC4 key size (40/128-bit) and supports AES-128
+      (`/V 4 /R 4`) and AES-256 (`/V 5 /R 5`) via `javax.crypto` CBC + per-object IV.
+      **Kotlin path not unit-tested against the pypdf/pikepdf corpus** (no local
+      JDK) — the highest-risk unverified change; test unlock on a real AES PDF.
+- [x] 5. **Compress makes files bigger + blurry.** Post-compression size check: if the
+      rasterized output is >= the original, the ORIGINAL is returned untouched with
+      an "already optimized" note. User-approved behavior.
 
 ### P1 — FEATURES
-- [ ] 6. **Edit PDF: real editing tools.** Currently draws text at a fixed
-      offset and strokes as one polyline. Fix: tap-to-place TEXT (drag the text
-      box to position), freehand PEN, SIGNATURE, ERASER (per-stroke, not
-      random), per-page.
-- [ ] 7. **Scan auto-crop: robust.** `cropToDocument()` uses a fixed Sobel
-      threshold and bails silently on most real photos. Fix: adaptive
-      threshold + fallback; verify it actually fires.
-- [ ] 8. **Delete OCR completely.** Tool cards (ToolCatalog OCR entry,
-      ToolSelectorStrip PhotoOCR), `PhotoOcrWorkbench.kt`, ML Kit code in
-      `AdvancedPdfEngine` (`ocrPdf`, `ocrPdfLayoutPreserving`,
-      `extractTextWithReadingOrder`, `reconstructReadingOrder`) and `PdfEngine`
-      (`extractTextFromMultipleImages`, `convertPhotosToOcrPdf`,
-      `buildSearchableOcrPdf`, `extractTextFromImageUri`), VM OCR state + funcs
-      (`runOcrOnScans`, `scanOcr*`, `convertOcrToPdf`, `sendOcrToComposer`,
-      `sendExtractedPageToOcr`), MainActivity wiring, `ImageToPdfWorkbench`
-      OCR button, ToolWorkbenchScreen `PHOTO_OCR_TO_PDF` branch, `mlkit-text-recognition`
-      dependency. **Keep `PHOTO_OCR_TO_PDF` enum value** (DB history safety) —
-      no card, no screen, unreachable.
+- [ ] 6. **Edit PDF: real editing tools.** NOT DONE — deferred. Current state remains
+      fixed-offset text + single polyline. Tap-to-place text, pen, signature and
+      per-stroke eraser need a editor rewrite (tracked below).
+- [ ] 7. **Scan auto-crop: robust.** NOT DONE — deferred. `cropToDocument()` still
+      uses the fixed Sobel threshold.
+- [x] 8. **Delete OCR completely.** Done and dex-verified: `PhotoOcrWorkbench.kt`
+      deleted (485 lines), ML Kit code removed from `AdvancedPdfEngine` +
+      `PdfEngine`, VM OCR state + 10 funcs removed, `sendExtractedPageToOcr` kept as
+      a documented no-op, `PHOTO_OCR_TO_PDF`/`OCR_PDF` enum values RETAINED for DB
+      history safety, `mlkit-text-recognition` dependency cut from
+      `build.gradle.kts` + `libs.versions.toml`. Dex scan confirms zero OCR strings.
 
 ### P2 — SHIP
-- [ ] 9. Push → CI green → fetch APK + build.log.
-- [ ] 10. Subagent verification audit: every tool path + dex checks (OCR strings
-       gone, new features present). Then send APK to user.
+- [x] 9. Push → CI green → fetch APK + build.log. Run #45 succeeded in ~3 min after
+      fixing build #44 (three OCR-removal compile errors + the ML Kit dependency).
+- [x] 10. Dex verification audit: zip valid, 11 dexes, OCR strings absent,
+       `ThemeMode` present. Subagent audit deferred (no device).
+
+### Deferred to v1.9 (edit tools #6, scan auto-crop #7)
+
+### Build #44 failure → #45 fix (record so it isn't relearned)
+1. `ToolWorkbenchScreen` still declared 13 OCR params the call site no longer passed
+   → removed the whole parameter block.
+2. `persistEditedPage` used `Context` without importing `android.content.Context`.
+3. `executeUniversalTool` EXTRACT_TEXT branch called the deleted
+   `AdvancedPdfEngine.extractTextFromBitmap(bmp)` → OCR fallback removed; a text-less
+   scan now reports "No extractable text found" instead of crashing the build.
+4. Lesson: deleting functions by line-range fused `sortPdfsBySize`/`clearPdfsForMerge`/
+   `updateMergeFileName` onto one line. A comment/triple-quote-aware brace scan caught
+   it (261 vs 262) and the bodies were restored from HEAD.
 
 ---
 
