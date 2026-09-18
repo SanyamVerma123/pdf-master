@@ -132,12 +132,12 @@ internal object PdfCrypto {
 
     private fun parseObjects(raw: ByteArray): List<ObjInfo> {
         val text = String(raw, Charsets.ISO_8859_1)
-        // Not anchored to a line start: some writers put a space (or no newline at
-        // all) between one "endobj" and the next object header, and CR-only files
-        // confuse the multiline flag. Matching on the object keyword itself is
-        // strictly more permissive and cannot misfire on payload content, because
-        // a body never legitimately contains "N M obj" outside a header.
-        val objRegex = Regex("(?s)\\b(\\d+)\\s+(\\d+)\\s+obj\\b")
+        // Object headers may be indented or glued to the preceding "endobj"
+        // (writers are not required to put them on their own line). Anchor to a
+        // line start or the tail of an "endobj" keyword. Staying anchored this
+        // way is what keeps a literal "N 0 obj" inside a stream payload from
+        // being mistaken for a header and corrupting the decrypted output.
+        val objRegex = Regex("(?:^|[\\r\\n]|endobj)[ \\t]*(\\d+)\\s+(\\d+)\\s+obj\\b")
         val objs = mutableListOf<ObjInfo>()
         for (m in objRegex.findAll(text)) {
             val payloadStart = m.range.last + 1
@@ -429,11 +429,13 @@ internal object PdfCrypto {
             ?: throw IllegalStateException("This PDF is not password protected.")
         val encNum = encRef.groupValues[1].toInt()
 
-        // The object need not sit exactly at column 0: some writers indent the
-        // header or place it after another "endobj" with only a space between.
-        // Tolerate leading whitespace, but stay line-anchored so a literal
-        // "3 0 obj" inside a stream payload can never be mistaken for a header.
-        val encObjMatch = Regex("(?m)^[ \\t]*${encNum}\\s+0\\s+obj\\b").find(text)
+        // Locate the encryption dictionary object. Writers are not required to
+        // put the "N 0 obj" header on its own line: some emit it glued to the
+        // preceding object ("...endobj20 0 obj"). Anchor to either a line start
+        // or the tail of an "endobj" keyword, and allow indentation. A literal
+        // "3 0 obj" inside a stream payload cannot match, because it is never
+        // preceded by a newline or by "endobj".
+        val encObjMatch = Regex("(?:^|[\\r\\n]|endobj)[ \\t]*${encNum}\\s+0\\s+obj\\b").find(text)
             ?: throw IllegalStateException(
                 "Could not locate the encryption dictionary. " +
                     "This file may use compressed object streams, which this " +
@@ -462,8 +464,17 @@ internal object PdfCrypto {
         val fileId = if (idMatch != null) fromHex(idMatch.groupValues[1]) else ByteArray(0)
         if (fileId.size != 16) throw IllegalStateException("Could not read the document ID.")
 
+        // The supplied password may be either the user or the owner password.
+        // Algorithm 7: when it is the owner password, the user password is
+        // recovered by decrypting /O, then the key is re-derived from that.
         val key = deriveKeyFromUserPassword(password, oVal, pVal, fileId, keyLen, rVal)
-        checkUserPassword(key, uVal, fileId, password, rVal, useAes)
+        val ok = try {
+            checkUserPassword(key, uVal, fileId, password, rVal, useAes)
+            true
+        } catch (pw: IllegalStateException) {
+            recoverOwnerPassword(password, oVal, uVal, pVal, fileId, keyLen, rVal, useAes) != null
+        }
+        if (!ok) throw IllegalStateException("Incorrect password. Please check and try again.")
 
         val objs = parseObjects(raw)
         val out = raw.copyOf()
@@ -539,15 +550,94 @@ internal object PdfCrypto {
             }
             return
         }
-        val expected = if (useAes) {
-            // R4+: /U is MD5(password + /O + /P /ID) keyed through the file key
-            // with AES, then only the first 16 bytes matter.
-            md5(pad(pw) + fileId)
+        // Algorithm 5 (R>=3) / Algorithm 4 (R2): recompute /U from the file key
+        // and compare the leading 16 bytes for R>=3. For R>=3 the 19 RC4 rounds
+        // each XOR the KEY with the round counter (1..19) - XOR-ing the data
+        // instead is a common mistake that still "looks" plausible but never
+        // matches. R2 has no rounds at all.
+        val expected = if (rVal <= 2) {
+            rc4(key, PAD)
         } else {
-            rc4(key, md5(PAD + fileId))
+            var u = rc4(key, md5(PAD + fileId))
+            repeat(19) { round ->
+                val k = ByteArray(key.size) { (key[it].toInt() xor (round + 1)).toByte() }
+                u = rc4(k, u)
+            }
+            u
         }
-        if (!expected.contentEquals(uVal.sliceArray(0 until expected.size))) {
+        val cmpLen = if (rVal >= 3) minOf(16, minOf(expected.size, uVal.size)) else minOf(expected.size, uVal.size)
+        if (!expected.sliceArray(0 until cmpLen).contentEquals(uVal.sliceArray(0 until cmpLen))) {
             throw IllegalStateException("Incorrect password. Please check and try again.")
+        }
+    }
+
+    /**
+     * Algorithm 7: authenticating the owner password. /O is the user password
+     * encrypted with a key derived from the owner password; recovering it and
+     * re-deriving the file key yields a working key when the supplied string is
+     * the owner rather than the user password. Returns that key, or null when
+     * the password is neither.
+     */
+    private fun recoverOwnerPassword(
+        password: String, oVal: ByteArray, uVal: ByteArray, pVal: Int,
+        fileId: ByteArray, keyLen: Int, rVal: Int, useAes: Boolean
+    ): ByteArray? {
+        return try {
+            // Algorithm 3: the /O value's RC4 key.
+            var oh = md5(pad(password))
+            if (rVal >= 3) repeat(50) { oh = md5(oh.sliceArray(0 until keyLen)) }
+            val rc4Key = oh.sliceArray(0 until keyLen)
+
+            var userPw: ByteArray = if (rVal <= 2) {
+                rc4(rc4Key, oVal)
+            } else {
+                var v = oVal
+                // 20 rounds, counter from 19 down to 0, key XOR-ed each round.
+                for (i in 19 downTo 0) {
+                    val k = ByteArray(rc4Key.size) { (rc4Key[it].toInt() xor i).toByte() }
+                    v = rc4(k, v)
+                }
+                v
+            }
+            val recoveredKey = deriveKeyFromUserPasswordBytes(
+                userPw, oVal, pVal, fileId, keyLen, rVal
+            )
+            checkUserPasswordBytes(recoveredKey, uVal, fileId, rVal)
+            recoveredKey
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** [deriveKeyFromUserPassword] for a password already decoded to bytes. */
+    private fun deriveKeyFromUserPasswordBytes(
+        pw: ByteArray, oVal: ByteArray, pVal: Int, fileId: ByteArray, keyLen: Int, rVal: Int
+    ): ByteArray {
+        if (rVal >= 5) return deriveKeyFromUserPassword(
+            String(pw, Charsets.ISO_8859_1), oVal, pVal, fileId, keyLen, rVal
+        )
+        val padded = (pw + PAD).sliceArray(0 until 32)
+        var hash = md5(padded + oVal + intLe4(pVal) + fileId)
+        repeat(50) { hash = md5(hash.sliceArray(0 until keyLen)) }
+        return hash.sliceArray(0 until keyLen)
+    }
+
+    /** Byte-level variant of [checkUserPassword], for a recovered password. */
+    private fun checkUserPasswordBytes(key: ByteArray, uVal: ByteArray, fileId: ByteArray, rVal: Int) {
+        if (rVal >= 5) return
+        val expected = if (rVal <= 2) {
+            rc4(key, PAD)
+        } else {
+            var u = rc4(key, md5(PAD + fileId))
+            repeat(19) { round ->
+                val k = ByteArray(key.size) { (key[it].toInt() xor (round + 1)).toByte() }
+                u = rc4(k, u)
+            }
+            u
+        }
+        val cmpLen = if (rVal >= 3) minOf(16, minOf(expected.size, uVal.size)) else minOf(expected.size, uVal.size)
+        if (!expected.sliceArray(0 until cmpLen).contentEquals(uVal.sliceArray(0 until cmpLen))) {
+            throw IllegalStateException("owner password validation failed")
         }
     }
 

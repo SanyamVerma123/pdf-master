@@ -158,11 +158,26 @@ object AdvancedPdfEngine {
         val tempPdf = PdfEngine.copyUriToTemp(context, pdfUri) ?: throw IllegalStateException("Failed to read PDF")
         val originalSize = tempPdf.length()
 
-        // Escalation ladder (v1.8.2 bug report): a single fixed DPI/quality pass
-        // reliably came out LARGER than the source for photo PDFs, because the
-        // re-encoded raster carries more pixels than the original compressed
-        // images. Try the requested settings, then progressively more aggressive
-        // ones, and only ship a pass that actually beat the original size.
+        // Photo PDFs carry full-page images stored with a lossless filter (/FlateDecode),
+        // which is enormously wasteful for photographic content. Re-encoding those embedded
+        // bitmaps as JPEG is the only approach that shrinks such a file: re-rasterizing the
+        // whole page (the fallback below) always adds pixels the original never had and
+        // comes out bigger, which is exactly the v1.8.2 "already optimized" false positive.
+        // This pass keeps page geometry, text and vector content untouched - no blur.
+        val recompressed = try {
+            recompressEmbeddedImages(context, tempPdf, quality, isGrayscale, onProgress)
+        } catch (e: Exception) {
+            null
+        }
+        if (recompressed != null && recompressed.length() < originalSize) {
+            tempPdf.delete()
+            return@withContext recompressed
+        }
+        recompressed?.delete()
+
+        // Escalation ladder: a single fixed DPI/quality pass reliably came out LARGER than
+        // the source for photo PDFs. Try the requested settings, then progressively more
+        // aggressive ones, and only ship a pass that actually beat the original size.
         val attempts = listOf(
             dpi to quality,
             (dpi * 0.75f).toInt().coerceIn(50, dpi) to (quality * 0.8f).toInt().coerceIn(20, quality),
@@ -193,6 +208,191 @@ object AdvancedPdfEngine {
         if (fallback.length() == originalSize) fallback
         else throw lastError ?: IllegalStateException("Compression failed to produce a smaller file.")
     }
+
+    /**
+     * Walks the object table, decodes every /Subtype /Image stream and re-encodes it as
+     * JPEG at [quality]. Only images that actually get smaller are replaced, and only
+     * when the whole document ends up smaller than the original. Returns null (and cleans
+     * up) when the pass cannot beat the source, so the caller can fall through to the
+     * rasterizer path or the "already optimized" note.
+     */
+    private fun recompressEmbeddedImages(
+        context: Context,
+        tempPdf: File,
+        quality: Int,
+        isGrayscale: Boolean,
+        onProgress: (Int, Int) -> Unit
+    ): File? {
+        val raw = tempPdf.readBytes()
+        val text = String(raw, Charsets.ISO_8859_1)
+        // Same anchoring rule as the crypto parser: a header starts a line or follows
+        // "endobj". Keeps "N 0 obj" text inside a stream payload from matching.
+        val objRegex = Regex("(?:^|[\\r\\n]|endobj)[ \\t]*(\\d+)\\s+(\\d+)\\s+obj\\b")
+        // headerStart / headerEnd / payloadStart / endobjPos / object number.
+        data class Obj(val headerStart: Int, val headerEnd: Int, val payloadStart: Int, val endObj: Int, val num: Int)
+        val objs = mutableListOf<Obj>()
+        for (m in objRegex.findAll(text)) {
+            val payloadStart = m.range.last + 1
+            val end = text.indexOf("endobj", payloadStart)
+            if (end > payloadStart) {
+                objs.add(Obj(m.range.first, m.range.last + 1, payloadStart, end, m.groupValues[1].toInt()))
+            }
+        }
+        if (objs.isEmpty()) return null
+
+        val imageObjs = objs.filter { o ->
+            val seg = text.substring(o.payloadStart, o.endObj)
+            seg.contains("/Subtype") && seg.contains("/Image")
+        }
+        if (imageObjs.isEmpty()) return null
+
+        // Pre-compute the JPEG replacement for each image object, keyed by headerStart.
+        // A replacement carries its own "N 0 obj" header (the object owns its header, so a
+        // replacement that omitted it would leave a dict with no object number).
+        val replacements = mutableMapOf<Int, ByteArray>()
+        var savedBytes = 0
+        imageObjs.forEachIndexed { index, o ->
+            onProgress(index + 1, imageObjs.size)
+            val dictEnd = text.indexOf("stream", o.payloadStart)
+            if (dictEnd < 0 || dictEnd >= o.endObj) return@forEachIndexed
+            val dictText = text.substring(o.payloadStart, dictEnd)
+            // Already-JPEG images are as small as they get; re-encoding only loses quality.
+            if (dictText.contains("/DCTDecode")) return@forEachIndexed
+
+            var dataStart = dictEnd + "stream".length
+            if (dataStart < raw.size && raw[dataStart] == 0x0D.toByte()) dataStart++
+            if (dataStart < raw.size && raw[dataStart] == 0x0A.toByte()) dataStart++
+            var dataEnd = text.indexOf("endstream", dataStart)
+            if (dataEnd < 0 || dataEnd <= dataStart) return@forEachIndexed
+            // A trailing EOL before endstream is not part of the encoded data.
+            if (dataEnd - 1 >= dataStart && raw[dataEnd - 1] == 0x0A.toByte()) dataEnd--
+            if (dataEnd - 1 >= dataStart && raw[dataEnd - 1] == 0x0D.toByte()) dataEnd--
+
+            val encoded = raw.sliceArray(dataStart until dataEnd)
+            val decoded = decodeImageStream(dictText, encoded) ?: return@forEachIndexed
+            val bitmap = BitmapFactory.decodeByteArray(decoded, 0, decoded.size) ?: return@forEachIndexed
+            val target = if (isGrayscale) toGrayscale(bitmap) else bitmap
+
+            val jpgStream = ByteArrayOutputStream()
+            target.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(10, 100), jpgStream)
+            val jpegBytes = jpgStream.toByteArray()
+            target.recycle()
+            if (jpegBytes.size >= encoded.size) return@forEachIndexed  // never grow an image
+
+            val newDict = dictText
+                .replace(Regex("/Filter\\s*/FlateDecode"), "/Filter /DCTDecode")
+                .replace(Regex("/Filter\\s*\\[[^\\]]*\\]"), "/Filter /DCTDecode")
+                .replace(Regex("/DecodeParms\\s*[^/]+"), "")  // pairs with the old filter
+            // /Length must describe the new payload exactly, or the reader mis-splits the stream.
+            val withLength = if (newDict.contains("/Length")) {
+                newDict.replace(Regex("/Length\\s+\\d+"), "/Length ${jpegBytes.size}")
+            } else {
+                newDict.trimEnd() + " /Length ${jpegBytes.size}"
+            }
+            val header = text.substring(o.headerStart, o.headerEnd)
+            replacements[o.headerStart] = header.toByteArray(Charsets.ISO_8859_1) +
+                (withLength.trimEnd() + "\nstream\n").toByteArray(Charsets.ISO_8859_1) +
+                jpegBytes + "\nendstream\nendobj".toByteArray(Charsets.ISO_8859_1)
+            savedBytes += (o.endObj - o.payloadStart) - (replacements[o.headerStart]!!.size - header.length)
+        }
+        if (savedBytes <= 0) return null
+
+        // Rebuild by appending, never overwriting in place: a substitution is shorter than
+        // the original, so in-place arraycopy would clobber the following objects. Each
+        // object owns [headerStart, endobjPos + 6); the bytes between objects (whitespace, or
+        // nothing when a header is glued to the previous "endobj") are copied from the
+        // original so spacing stays byte-identical.
+        val xrefPos = text.indexOf("xref")
+        val bodyEnd = if (xrefPos > 0) xrefPos else raw.size
+        val result = ByteArrayOutputStream(raw.size)
+        val newOffsets = mutableMapOf<Int, Int>()
+        result.write(raw, 0, objs.first().headerStart)   // %PDF header + comments
+        objs.forEachIndexed { idx, o ->
+            val prevEnd = if (idx > 0) objs[idx - 1].endObj + "endobj".length else objs.first().headerStart
+            if (o.headerStart > prevEnd) result.write(raw, prevEnd, o.headerStart - prevEnd)
+            newOffsets[o.headerStart] = result.size()
+            val replacement = replacements[o.headerStart]
+            if (replacement != null) {
+                result.write(replacement)
+            } else {
+                result.write(raw, o.headerStart, o.endObj + "endobj".length - o.headerStart)
+            }
+        }
+        // Any bytes between the last "endobj" and the original xref table.
+        val lastEnd = objs.last().endObj + "endobj".length
+        if (bodyEnd > lastEnd) result.write(raw, lastEnd, bodyEnd - lastEnd)
+
+        return finishRewrite(context, result, text, newOffsets)
+    }
+
+    /** Converts a bitmap to grayscale without mutating the original. */
+    private fun toGrayscale(bitmap: Bitmap): Bitmap {
+        val gray = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(gray)
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG).apply {
+            colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) })
+        }
+        canvas.drawBitmap(bitmap, 0f, 0f, paint)
+        bitmap.recycle()
+        return gray
+    }
+
+    /** Inflates a Flate-encoded image stream; returns null when the filter is unsupported. */
+    private fun decodeImageStream(dictText: String, encoded: ByteArray): ByteArray? {
+        return try {
+            if (!dictText.contains("/FlateDecode")) return null
+            java.util.zip.InflaterInputStream(java.io.ByteArrayInputStream(encoded)).use { it.readBytes() }
+        } catch (_: Exception) { null }
+    }
+
+    /**
+     * Appends a classic xref table + trailer to [result] for the objects recorded in
+     * [newOffsets], preserving /Root and /Size from the original [text] trailer.
+     */
+    private fun finishRewrite(
+        context: Context,
+        result: ByteArrayOutputStream,
+        text: String,
+        newOffsets: Map<Int, Int>
+    ): File? {
+        val trailerStart = text.lastIndexOf("trailer")
+        if (trailerStart < 0) return null   // cross-reference-stream file: out of scope here
+        val tail = text.substring(trailerStart)
+        // The object number for each offset is the one in that object's header.
+        val byNumber = mutableMapOf<Int, Int>()
+        val objNumRegex = Regex("(?:^|[\\r\\n]|endobj)[ \\t]*(\\d+)\\s+(\\d+)\\s+obj\\b")
+        for (m in objNumRegex.findAll(text)) {
+            byNumber[m.groupValues[1].toInt()] = newOffsets[m.range.first] ?: -1
+        }
+        val size = Regex("/Size\\s+(\\d+)").find(tail)?.groupValues?.get(1)?.toIntOrNull()
+            ?: (byNumber.keys.maxOrNull()!! + 1)
+        val root = Regex("/Root\\s+\\d+\\s+\\d+\\s+R").find(tail)?.value?.substringAfter("/Root")?.trim()
+            ?: "1 0 R"
+        // Preserve /ID so viewers keep identifying the same document.
+        val idEntry = Regex("/ID\\s*\\[[^]]*]").find(tail)?.value ?: ""
+
+        val xrefOffset = result.size()
+        val sb = StringBuilder()
+        sb.append("xref\n0 ").append(size).append('\n')
+        sb.append("0000000000 65535 f \n")
+        for (i in 1 until size) {
+            val off = byNumber[i]
+            if (off != null && off >= 0) sb.append("%010d 00000 n \n".format(off))
+            else sb.append("0000000000 00000 f \n")
+        }
+        result.write(sb.toString().toByteArray(Charsets.ISO_8859_1))
+        val trailer = if (idEntry.isNotEmpty()) {
+            "trailer\n<< /Size $size /Root $root $idEntry >>\nstartxref\n$xrefOffset\n%%EOF\n"
+        } else {
+            "trailer\n<< /Size $size /Root $root >>\nstartxref\n$xrefOffset\n%%EOF\n"
+        }
+        result.write(trailer.toByteArray(Charsets.ISO_8859_1))
+
+        val outFile = File(context.filesDir, "compressed_img_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.pdf")
+        outFile.writeBytes(result.toByteArray())
+        return outFile
+    }
+
 
     /**
      * One rasterize-and-rebuild pass. Returns the new file only when it is

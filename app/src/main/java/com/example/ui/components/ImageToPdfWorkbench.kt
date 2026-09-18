@@ -1,5 +1,8 @@
 package com.example.ui.components
 
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -10,6 +13,8 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.Image
 import coil.compose.AsyncImage
 import androidx.compose.foundation.BorderStroke
@@ -90,6 +95,25 @@ import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.TextTertiary
 
+/**
+ * Prepares a temp capture file in app-private cache and hands its [FileProvider] Uri to the
+ * camera contract. Kept outside the composable so the permission callback can call it too,
+ * which is what lets a first-time user tap the button once and get the camera immediately.
+ */
+private fun startCameraCapture(
+    context: Context,
+    cameraOutUriSetter: (Uri) -> Unit,
+    launch: (Uri) -> Unit
+) {
+    val dir = java.io.File(context.cacheDir, "camera_captures").apply { mkdirs() }
+    val file = java.io.File(dir, "img_${System.currentTimeMillis()}.jpg")
+    // The file must exist before the Uri is handed over, or some camera apps fail silently.
+    file.createNewFile()
+    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    cameraOutUriSetter(uri)
+    launch(uri)
+}
+
 @Composable
 fun ImageToPdfWorkbench(
     selectedImages: List<Uri>,
@@ -135,6 +159,24 @@ fun ImageToPdfWorkbench(
                 if (ok) onAddImages(listOf(uri))
             }
         }
+    }
+
+    // The TakePicture contract hands a content:// Uri to the camera app, which needs
+    // the CAMERA permission granted by US to function. Declaring it in the manifest is
+    // not enough on API 23+; launching without the runtime grant crashes the whole app
+    // (the camera process dies and takes the foreground activity with it), which is the
+    // "app closes when I tap camera" report.
+    var hasCameraPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasCameraPermission = granted
+        if (granted) startCameraCapture(context, cameraOutUriSetter = { cameraOutUri = it }, launch = { uri -> cameraLauncher.launch(uri) })
     }
 
     var showAdvancedSettings by remember { mutableStateOf(false) }
@@ -307,14 +349,17 @@ fun ImageToPdfWorkbench(
                     // Camera: capture a page straight into this PDF.
                     OutlinedButton(
                         onClick = {
-                            val dir = java.io.File(context.cacheDir, "camera_captures").apply { mkdirs() }
-                            val file = java.io.File(dir, "img_${System.currentTimeMillis()}.jpg")
-                            cameraOutUri = androidx.core.content.FileProvider.getUriForFile(
-                                context,
-                                "${context.packageName}.fileprovider",
-                                file
-                            )
-                            cameraOutUri?.let { cameraLauncher.launch(it) }
+                            if (hasCameraPermission) {
+                                startCameraCapture(
+                                    context = context,
+                                    cameraOutUriSetter = { cameraOutUri = it },
+                                    launch = { uri -> cameraLauncher.launch(uri) }
+                                )
+                            } else {
+                                // Request first; the result callback starts the capture
+                                // itself so the user does not have to tap twice.
+                                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                            }
                         },
                         border = androidx.compose.foundation.BorderStroke(1.dp, CrimsonPrimary),
                         modifier = Modifier.testTag("camera_capture_button")
