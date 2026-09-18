@@ -57,6 +57,45 @@ Light mode is the default (added by user request mid-iteration).**
 
 ### Deferred to v1.9 (edit tools #6, scan auto-crop #7)
 
+---
+
+## v1.9 TODO — crop edge handles + Edit PDF multi-tool (2026-09-18)
+
+### P0 — CROP: adjustable edge handles
+- [ ] 1. Drag-to-create stays, but once a `cropRect` exists a drag that starts
+      NEAR a corner/edge adjusts that handle instead of redrawing the whole
+      rectangle. Hit-test radius ~28dp so the handles are grabbable by a finger.
+- [ ] 2. Edges clamp inside the page; a min-size guard keeps the selection from
+      collapsing to nothing. Moving handles can cross over (left>right) and is
+      normalized, so any corner can become any other corner.
+- [ ] 3. A drag that starts in the middle of the selection moves the WHOLE
+      selection (translate), because that is the other adjustment users expect.
+- [ ] 4. Handles drawn at all 4 corners + 4 edge midpoints, redrawn live.
+
+### P0 — EDIT PDF: multi-tool
+- [ ] 5. Tool strip in `PageEditSheet`: TEXT, PEN, SIGN, ERASER (replaces the
+      single draw toggle).
+- [ ] 6. TEXT: tap-to-place. A tap drops a blinking text caret; the user types
+      and the text is placed at the tap point. Placed text is draggable.
+- [ ] 7. PEN: multi-stroke polyline drawing (existing behavior, kept).
+- [ ] 8. SIGN: draw a signature stroke on a transparent layer, placed at the
+      bottom of the page by default, draggable.
+- [ ] 9. ERASER: tap a placed stroke/text to remove it. Strokes are stored as
+      objects (not a raw point list) so individual items can be deleted.
+- [ ] 10. APPLY commits everything (crop + text + pen + sign) to the page
+       bitmap via `persistEditedPage`, same Uri-swap path as v1.8.
+
+### P1 — SHIP
+- [ ] 11. Push → CI green → fetch APK, dex-verify the new strings, send to
+       Telegram. Mark this section SHIPPED with the run number.
+
+### NOTES
+- `strokes` changes from `mutableStateListOf<PointF>` to a list of `Stroke`
+  data classes (points + color + width + kind) so the eraser can address one.
+- Text items are `TextItem(text, x, y, size, color)` in normalized page space.
+- All edits are applied on APPLY, never per-keystroke, so the bitmap is written
+  once (the v1.8 Uri-swap path that fixed the discarded edits).
+
 ### Build #44 failure → #45 fix (record so it isn't relearned)
 1. `ToolWorkbenchScreen` still declared 13 OCR params the call site no longer passed
    → removed the whole parameter block.

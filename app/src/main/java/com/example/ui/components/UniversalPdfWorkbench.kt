@@ -1212,6 +1212,13 @@ fun UniversalPdfWorkbench(
                 onAnnotatePage = { index, strokes ->
                     pageAnnotations[index] = strokes
                 },
+                onAnnotatePageObjects = { index, strokeObjs, textObjs ->
+                    // v1.9: bake strokes + text into the page bitmap immediately, then
+                    // refresh the preview. This is the same Uri-swap path v1.8 used for
+                    // crop, so the edit survives into the exported PDF.
+                    val edited = AdvancedPdfEngine.renderPageEdits(pageBitmaps[index], strokeObjs, textObjs)
+                    pageBitmaps = pageBitmaps.toMutableList().apply { set(index, edited) }
+                },
                 onCropPage = { index, crop ->
                     pageBitmaps = pageBitmaps.toMutableList().apply {
                         val bmp = getOrNull(index) ?: return@PageEditSheet

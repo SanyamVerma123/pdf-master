@@ -3,12 +3,12 @@ package com.example.engine
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Canvas
+import android.graphics.Path
+import android.graphics.PointF
 import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
-import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
@@ -42,6 +42,69 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 object AdvancedPdfEngine {
+
+    /**
+     * One pen/signature stroke: a polyline. Points are canvas-pixel space while editing and
+     * normalized (0f..1f over the page bitmap) after APPLY. Stored as an object - not a raw
+     * point list - so the eraser can delete one stroke, and a signature stays one unit.
+     */
+    data class StrokeObj(
+        val points: List<PointF>,
+        val color: Int,
+        val widthPx: Float,
+        val isSignature: Boolean = false
+    )
+
+    /**
+     * Tap-to-place text. [x], [y] are the baseline anchor; normalized after APPLY.
+     */
+    data class TextObj(var text: String, var x: Float, var y: Float, val sizePx: Float, val color: Int)
+
+    /**
+     * v1.9: bakes [strokes] and [textItems] into a copy of [page] and returns it. Points are
+     * normalized (0f..1f) over the bitmap, so this is resolution-independent. This is the
+     * commit step for the edit tools - it is what makes text/pen/sign actually appear in the
+     * exported PDF rather than vanishing when the sheet closes.
+     */
+    fun renderPageEdits(
+        page: android.graphics.Bitmap,
+        strokes: List<StrokeObj>,
+        textItems: List<TextObj>
+    ): android.graphics.Bitmap {
+        val out = page.copy(android.graphics.Bitmap.Config.ARGB_8888, true)
+        val c = android.graphics.Canvas(out)
+        val W = out.width.toFloat(); val H = out.height.toFloat()
+
+        strokes.forEach { s ->
+            val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = s.color
+                style = android.graphics.Paint.Style.STROKE
+                strokeCap = android.graphics.Paint.Cap.ROUND
+                strokeJoin = android.graphics.Paint.Join.ROUND
+                strokeWidth = s.widthPx
+            }
+            val path = android.graphics.Path()
+            val pts = s.points
+            if (pts.size >= 2) {
+                path.moveTo(pts[0].x * W, pts[0].y * H)
+                for (i in 1 until pts.size) {
+                    path.lineTo(pts[i].x * W, pts[i].y * H)
+                }
+                c.drawPath(path, paint)
+            }
+        }
+        textItems.forEach { t ->
+            if (t.text.isBlank()) return@forEach
+            val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = t.color
+                textSize = t.sizePx
+                isFakeBoldText = true
+            }
+            // Normalized coordinates: the baseline anchor is the point the user tapped.
+            c.drawText(t.text, t.x * W, t.y * H, paint)
+        }
+        return out
+    }
 
     /**
      * Grace period given to a WebView after it reports it is done, so that
