@@ -103,6 +103,9 @@ fun ImageToPdfWorkbench(
     onReplaceImage: (Int, Uri) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 50)
     ) { uris ->
@@ -141,8 +144,6 @@ fun ImageToPdfWorkbench(
     var editingPageIndex by remember { mutableStateOf<Int?>(null) }
     var pageBitmaps by remember { mutableStateOf<List<android.graphics.Bitmap>>(emptyList()) }
     var isLoadingPageBitmaps by remember { mutableStateOf(false) }
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
 
     // Persists an edited page bitmap and swaps the staged Uri so the preview
     // grid AND the export pipeline both reflect the edit.
