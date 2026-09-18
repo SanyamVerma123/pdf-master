@@ -658,6 +658,7 @@ fun PageEditSheet(
                                     }
                                 }
                             }
+                    )
                 }
 
                 // Apply / clear v1.9 edits: strokes + text.
