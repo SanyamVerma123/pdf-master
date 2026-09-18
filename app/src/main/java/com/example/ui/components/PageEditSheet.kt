@@ -667,11 +667,13 @@ fun PageEditSheet(
                 ) {
                     // Text input for the item the user just placed. Typing updates the
                     // same object APPLY reads, so there is no separate "confirm" step.
-                    textInputFor?.let { item ->
-                        // item.text is a plain var, so the field hoists its own string
-                        // state and pushes into the object. Without this the TextField
-                        // would never recompose while the user types.
-                        var fieldText by remember { mutableStateOf(item.text) }
+                    // `item.text` is a plain var, so the field keeps its own string state
+                    // and pushes into the object; keyed to the item so placing a second
+                    // text starts fresh instead of replaying the first.
+                    val editingText = textInputFor?.text ?: ""
+                    var fieldText by remember(textInputFor) { mutableStateOf(editingText) }
+                    if (textInputFor != null) {
+                        val item = textInputFor!!
                         OutlinedTextField(
                             value = fieldText,
                             onValueChange = {
