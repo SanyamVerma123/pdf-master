@@ -9,6 +9,28 @@ CI: GitHub Actions, `.github/workflows/build.yml`, ~3.5 min per build.
 **Current green build: `96423aa` → run #43 → release `omnipdf-43` → v1.7 APK (23,722,206 B)**
 Delivered artifact: `D:\hermes-workspace\OmniPDF-v1.7-debug.apk` — sent to Telegram, receipt confirmed.
 
+**SHIPPED — v2.0, CI run #57 (commit bac17a9, release omnipdf-57), 2026-09-18.
+APK: `D:\hermes-workspace\OmniPDF-v2.0-debug.apk` (22,924,176 B) — sent to Telegram.
+v2.0 adds the two deferred features: crop with adjustable edge handles (8 handles:
+4 corners + 4 edge midpoints, interior-drag to move, corner-crossing normalized) and
+an Edit PDF multi-tool strip (text / pen / sign / eraser, tap-to-place, APPLY bakes
+into the page bitmap). CI took 5 attempts; all 4 failures were edit mistakes
+(import dedup deleted both copies, nonexistent material icons, unbalanced `Box(`
+paren, `remember` inside a non-composable `let` lambda). All documented in the
+`android-agp9-build` skill as a pre-commit checklist for blind Kotlin edits.**
+
+**User's on-device verdict: "most things are working correctly." No specific
+regressions reported. Then moved on to a new project.**
+
+## Release chain (newest last)
+- v1.7  = #43  / `96423aa` / `omnipdf-43` / 23,722,206 B
+- v1.8  = #45  / `6d5c8a3` / `omnipdf-45` / 22,891,408 B — OCR removed, unlock/crop/drag/compress, light-mode default
+- v1.8.2 = #48 / (fix commit) / `omnipdf-48` / 22,891,408 B — Image to PDF rewrite (ImageDecoder, any format)
+- v1.8.3 = #49 / `2fad472` / `omnipdf-49` / 22,891,408 B — compress escalation ladder + presets retuned
+- v1.8.4 = #50 / (commit) / `omnipdf-50` / 22,907,792 B — real unlock fix (glued `endobj20 0 obj` header, Alg 5/7), photo-PDF recompress, camera runtime permission
+- v1.9  = #51 / (commit) / `omnipdf-51` / 22,907,792 B — compress now handles already-JPEG (`/DCTDecode`) images; default slider 110/60 matches RECOMMENDED
+- v2.0  = #57  / `bac17a9` / `omnipdf-57` / 22,924,176 B — crop edge handles + edit multi-tool
+
 **SHIPPED — v1.8, CI run #45 (commit 6d5c8a3, release omnipdf-45), 2026-09-18.
 APK: `D:\hermes-workspace\OmniPDF-v1.8-debug.apk` (22,891,408 B) — sent to Telegram.
 Light mode is the default (added by user request mid-iteration).**
@@ -37,9 +59,10 @@ Light mode is the default (added by user request mid-iteration).**
       an "already optimized" note. User-approved behavior.
 
 ### P1 — FEATURES
-- [ ] 6. **Edit PDF: real editing tools.** NOT DONE — deferred. Current state remains
-      fixed-offset text + single polyline. Tap-to-place text, pen, signature and
-      per-stroke eraser need a editor rewrite (tracked below).
+- [x] 6. **Edit PDF: real editing tools.** DONE in v2.0: 4-tool strip (Text/Pen/Sign/Eraser),
+      tap-to-place text, per-stroke eraser, APPLY bakes into the page bitmap via
+      `AdvancedPdfEngine.renderPageEdits`. Compiles + dex-verified; "most things working"
+      per the user, no specific regression named.
 - [ ] 7. **Scan auto-crop: robust.** NOT DONE — deferred. `cropToDocument()` still
       uses the fixed Sobel threshold.
 - [x] 8. **Delete OCR completely.** Done and dex-verified: `PhotoOcrWorkbench.kt`
